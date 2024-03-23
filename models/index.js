@@ -40,7 +40,9 @@ const sortDir = (maniDir) => {
 };
 sortDir(__dirname);
 
-files.forEach((file) => {
+files?.forEach((file) => {
+
+
     const model = require(file)(sequelize, Sequelize.DataTypes);
     db[model.name] = model;
 });
