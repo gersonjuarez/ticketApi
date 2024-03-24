@@ -11,24 +11,21 @@ module.exports = {
 
 
 
-            async login(req,res){
+            async register(req,res){
 
                 const t = await sequelize.transaction();
                 console.log("ENTRA PARA REGISTRAR: ",req.body);
 
                 try {
-                    return
-                    let user="Mario";
-                    let password="Prueba123";
-                    let idRole=1;
-                    let idCashier=1;
+                  const {user,password,idRole,idCashier}=req.body
+    
                     let salt = bcryptjs.genSaltSync();
-                    password = bcryptjs.hashSync(password, salt);
+                   const passwordTemp = bcryptjs.hashSync(password, salt);
                     
                     const userr = await User.create(
                         {
                             user,
-                            password,
+                            password:passwordTemp,
                             idRole,
                             idCashier
                         },
@@ -45,6 +42,51 @@ module.exports = {
                     await t.rollback();
                     res.status(400).json({ error: error});
                 }
+
+            },
+
+            async login(req,res){
+
+                const t = await sequelize.transaction();
+                console.log("Valor de body: ",req.body);
+
+                try {
+                    
+                    const {user,password}=req.body;
+                    const userLogin= await User.findOne(
+                        {
+                            where:{user:user},
+                            attributes:["user","idRole","idCashier","password"]
+                        }
+                    )
+
+                    if (!userLogin) {
+                        return res
+                            .status(401)
+                            .json({ errors: [{ msg: "Usuario o Contraseña Incorrecto." }] });
+                    }
+        
+                    // Verificar la contraseña
+                    const validPassword = bcryptjs.compareSync(
+                        password,
+                        userLogin.password
+                    );
+                    if (!validPassword) {
+                        return res
+                            .status(401)
+                            .json({ errors: [{ msg: "Usuario o Contraseña Incorrecto." }] });
+                    }
+
+                   return res.send(userLogin);
+
+                } catch (error) {
+                    console.log("Valor de error: ",error)
+                    res.status(500).json({
+                        msg: "Ocurrio un error hable con el administrador",
+                    });
+                }
+
+
 
             }
 

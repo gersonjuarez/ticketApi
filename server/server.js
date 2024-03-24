@@ -36,9 +36,10 @@ class Servidor {
 
   this.server = createServer(this.app);
 
- this.routes();
+  this.middlewares();
 
-  // Rutas de mi aplicación
+   this.routes();
+
 
 
 
