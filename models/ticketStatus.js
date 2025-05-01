@@ -1,40 +1,42 @@
 const { Model } = require("sequelize");
 module.exports = (sequelize, DataTypes) => {
-    class Role extends Model {
+    class TicketStatus extends Model {
         static associate(models) {
-            
-            Role.hasMany(models.User, {
-                foreignKey: "idRole",
+            TicketStatus.hasMany(models.TicketRegistration, {
+                foreignKey: "idTicketStatus",
             });
+          /*   TicketStatus.hasMany(models.Cashier, {
+                foreignKey: "idTicketStatus",
+            }); */
            
         }
     }
-    Role.init(
+    TicketStatus.init(
       
         {
-            idRole: {
+            idTicketStatus: {
                 allowNull: false,
                 autoIncrement: true,
                 primaryKey: true,
                 type: DataTypes.INTEGER,
             },
-            role: {
-                type: DataTypes.STRING(25),
+            name: {
+                type: DataTypes.STRING(15),
                 allowNull: false,
-                defaultValue: 1,
-
             },
             status: {
                 type: DataTypes.INTEGER,
                 allowNull: false,
+                defaultValue: 1,
+
             },
-       
+           
         },
         {
             sequelize,
-            modelName: "Role",
+            modelName: "TicketStatus",
             timestamps: true,
         }
     );
-    return Role;
+    return TicketStatus;
 };

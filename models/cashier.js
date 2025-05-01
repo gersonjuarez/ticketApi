@@ -8,6 +8,9 @@ module.exports = (sequelize, DataTypes) => {
             Cashier.belongsTo(models.Service, {
                 foreignKey: "idService",
             });
+            Cashier.hasMany(models.TicketRegistration, {
+                foreignKey: "idCashier",
+            });
         }
     }
     Cashier.init(
@@ -29,11 +32,17 @@ module.exports = (sequelize, DataTypes) => {
             idService:{
                 type:DataTypes.INTEGER,
                 allowNull:false
-            }
+            },
+            status: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: true,
+            },
         },
         {
             sequelize,
             modelName: "Cashier",
+            timestamps: true,
         }
     );
     return Cashier;
