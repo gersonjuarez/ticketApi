@@ -3,6 +3,11 @@ const cors = require("cors");
 const { createServer } = require("http");
 const db = require("../models");
 const user = require("../routes/auth.routes.js");
+const ticketRegistrationRoutes = require("../routes/ticketRegistration.routes");
+const ticketStatusRoutes = require("../routes/ticketStatus.routes");
+const clientRoutes = require("../routes/client.routes");
+const serviceRoutes = require("../routes/service.routes");
+const cashierRoutes = require("../routes/cashier.routes");
 
 /* const db = require("../models");
  */
@@ -68,6 +73,11 @@ class Servidor {
 
     routes() {
       this.app.use(this.paths.route,user);
+    this.app.use(this.paths.route, ticketRegistrationRoutes);
+    this.app.use(this.paths.route, ticketStatusRoutes);
+    this.app.use(this.paths.route, clientRoutes);
+    this.app.use(this.paths.route, serviceRoutes);
+    this.app.use(this.paths.route, cashierRoutes);
 
     }
 

@@ -48,7 +48,6 @@ module.exports = {
             async login(req,res){
 
                 const t = await sequelize.transaction();
-                console.log("Valor de body: ",req.body);
 
                 try {
                     
