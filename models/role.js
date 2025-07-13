@@ -2,15 +2,10 @@ const { Model } = require("sequelize");
 module.exports = (sequelize, DataTypes) => {
     class Role extends Model {
         static associate(models) {
-            
-            Role.hasMany(models.User, {
-                foreignKey: "idRole",
-            });
-           
+            Role.belongsToMany(models.Module, { through: models.RoleModule, foreignKey: 'idRole' });
         }
     }
     Role.init(
-      
         {
             idRole: {
                 allowNull: false,
@@ -18,17 +13,15 @@ module.exports = (sequelize, DataTypes) => {
                 primaryKey: true,
                 type: DataTypes.INTEGER,
             },
-            role: {
-                type: DataTypes.STRING(25),
+            name: {
+                type: DataTypes.STRING(20),
                 allowNull: false,
-                defaultValue: 1,
-
             },
             status: {
-                type: DataTypes.INTEGER,
+                type: DataTypes.BOOLEAN,
                 allowNull: false,
+                defaultValue: true,
             },
-       
         },
         {
             sequelize,

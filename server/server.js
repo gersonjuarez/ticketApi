@@ -8,9 +8,8 @@ const ticketStatusRoutes = require("../routes/ticketStatus.routes");
 const clientRoutes = require("../routes/client.routes");
 const serviceRoutes = require("../routes/service.routes");
 const cashierRoutes = require("../routes/cashier.routes");
+const { init } = require('./socket');
 
-/* const db = require("../models");
- */
 // configuracion de cors para definir que peticiones permitira la api y el origen al cual rendirle los datos
 const corsConfig = {
 
@@ -84,13 +83,12 @@ class Servidor {
 
 
  listen() {
-
-  this.server.listen(this.port, () => {
-    db.sequelize.sync();
- console.log("Servidor corriendo en puerto", this.port);
-
+  const httpServer = this.server.listen(this.port, () => {
+/*     db.sequelize.sync({ alter: true });
+ */    console.log("Servidor corriendo en puerto", this.port);
   });
-
+  // Inicializa Socket.IO usando el módulo compartido
+  init(httpServer);
  }
 
 }

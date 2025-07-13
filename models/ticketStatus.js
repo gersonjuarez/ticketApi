@@ -5,14 +5,9 @@ module.exports = (sequelize, DataTypes) => {
             TicketStatus.hasMany(models.TicketRegistration, {
                 foreignKey: "idTicketStatus",
             });
-          /*   TicketStatus.hasMany(models.Cashier, {
-                foreignKey: "idTicketStatus",
-            }); */
-           
         }
     }
     TicketStatus.init(
-      
         {
             idTicketStatus: {
                 allowNull: false,
@@ -21,20 +16,20 @@ module.exports = (sequelize, DataTypes) => {
                 type: DataTypes.INTEGER,
             },
             name: {
-                type: DataTypes.STRING(15),
+                type: DataTypes.STRING(30),
                 allowNull: false,
             },
             status: {
-                type: DataTypes.INTEGER,
+                type: DataTypes.BOOLEAN,
                 allowNull: false,
-                defaultValue: 1,
-
+                defaultValue: true,
             },
-           
         },
         {
             sequelize,
             modelName: "TicketStatus",
+            tableName: "ticketstatus", // fuerza tabla singular
+            freezeTableName: true,      // evita pluralización
             timestamps: true,
         }
     );

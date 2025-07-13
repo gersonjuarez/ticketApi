@@ -1,7 +1,10 @@
 
+const { Model } = require("sequelize");
 const db = require("../models");
 const bcryptjs = require("bcryptjs");
 const User = db.User;
+const Service = db.Service;
+const Cashier = db.Cashier;
 const Op = db.Sequelize.Op;
 const sequelize = db.sequelize;
 
@@ -17,14 +20,16 @@ module.exports = {
                 console.log("ENTRA PARA REGISTRAR: ",req.body);
 
                 try {
-                  const {user,password,idRole,idCashier}=req.body
+                  const {userName,password,idRole,idCashier,email,fullName}=req.body
     
                     let salt = bcryptjs.genSaltSync();
                    const passwordTemp = bcryptjs.hashSync(password, salt);
                     
                     const userr = await User.create(
                         {
-                            user,
+                            username:userName,
+                            email,
+                            fullName,
                             password:passwordTemp,
                             idRole,
                             idCashier
@@ -50,12 +55,27 @@ module.exports = {
                 const t = await sequelize.transaction();
 
                 try {
-                    
+                    console.log("ENTRA PARA LOGEAR: ",req.body);
                     const {user,password}=req.body;
                     const userLogin= await User.findOne(
                         {
-                            where:{user:user},
-                            attributes:["user","idRole","idCashier","password"]
+                            where:[
+                                {username:user},
+                                { status:true}],
+                            include:[
+                                {
+                                    model: Cashier,
+                                    attributes: ["idCashier", "name"],
+                                    include: [
+                                        {
+                                            model: Service,
+                                            attributes: ["idService", "name", "prefix"]
+                                        }
+                                    ]
+                                },
+                                
+                            ],
+                            attributes:["username","idRole","idCashier","password","email","fullName","status"],
                         }
                     )
 
@@ -76,7 +96,23 @@ module.exports = {
                             .json({ errors: [{ msg: "Usuario o Contraseña Incorrecto." }] });
                     }
 
-                   return res.send(userLogin);
+                    return res.send({
+                        username: userLogin.username,
+                        fullName: userLogin.fullName,
+                        email: userLogin.email,
+                        idRole: userLogin.idRole,
+                        idCashier: userLogin.idCashier,
+                        status: userLogin.status,
+                        cashier: {
+                            idCashier: userLogin.Cashier.idCashier,
+                            name: userLogin.Cashier.name,
+                            service: {
+                                idService: userLogin.Cashier.Service.idService,
+                                name: userLogin.Cashier.Service.name,
+                                prefix: userLogin.Cashier.Service.prefix
+                            }
+                        }
+                    });
 
                 } catch (error) {
                     console.log("Valor de error: ",error)

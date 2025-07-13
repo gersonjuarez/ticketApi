@@ -24,6 +24,10 @@ exports.create = async (req, res) => {
   try {
     const newService = await Service.create(req.body);
     res.status(201).json(newService);
+    // Emitir solo si el servicio está activo (status === 1)
+    if (global.io && newService.status === 1) {
+      global.io.emit('new-service', newService);
+    }
   } catch (error) {
     res.status(400).json({ error: error.message });
   }

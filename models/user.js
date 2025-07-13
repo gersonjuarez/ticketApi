@@ -20,13 +20,26 @@ module.exports = (sequelize, DataTypes) => {
                 primaryKey: true,
                 type: DataTypes.INTEGER,
             },
-            user: {
-                type: DataTypes.STRING(25),
+            username: {
+                type: DataTypes.STRING(30),
                 allowNull: false,
             },
             password: {
-                type: DataTypes.STRING(500),
+                type: DataTypes.STRING(100),
                 allowNull: false,
+            },
+            fullName: {
+                type: DataTypes.STRING(100),
+                allowNull: false,
+            },
+            email: {
+                type: DataTypes.STRING(100),
+                allowNull: false,
+            },
+            status: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: true,
             },
             idRole:{
                 type:DataTypes.INTEGER,
@@ -40,6 +53,7 @@ module.exports = (sequelize, DataTypes) => {
         {
             sequelize,
             modelName: "User",
+            timestamps: true,
         }
     );
     return User;

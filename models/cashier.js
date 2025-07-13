@@ -2,19 +2,15 @@ const { Model } = require("sequelize");
 module.exports = (sequelize, DataTypes) => {
     class Cashier extends Model {
         static associate(models) {
-            Cashier.hasMany(models.User, {
+               Cashier.hasMany(models.User, {
                 foreignKey: "idCashier",
             });
-            Cashier.belongsTo(models.Service, {
+               Cashier.belongsTo(models.Service, {
                 foreignKey: "idService",
-            });
-            Cashier.hasMany(models.TicketRegistration, {
-                foreignKey: "idCashier",
             });
         }
     }
     Cashier.init(
-      
         {
             idCashier: {
                 allowNull: false,
@@ -23,15 +19,13 @@ module.exports = (sequelize, DataTypes) => {
                 type: DataTypes.INTEGER,
             },
             name: {
-                type: DataTypes.STRING(15),
+                type: DataTypes.STRING(50),
                 allowNull: false,
             },
-            descripcion: {
-                type: DataTypes.STRING(30),
-            },
-            idService:{
-                type:DataTypes.INTEGER,
-                allowNull:false
+             idService: {
+                type: DataTypes.INTEGER,
+                allowNull: false,
+
             },
             status: {
                 type: DataTypes.BOOLEAN,

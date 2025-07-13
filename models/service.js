@@ -8,13 +8,9 @@ module.exports = (sequelize, DataTypes) => {
             Service.hasMany(models.TicketRegistration, {
                 foreignKey: "idService",
             });
-           /*  Service.hasMany(models.Client, {
-                foreignKey: "idService",
-            }); */
         }
     }
     Service.init(
-      
         {
             idService: {
                 allowNull: false,
@@ -29,9 +25,9 @@ module.exports = (sequelize, DataTypes) => {
             prefix: {
                 type: DataTypes.STRING(15),
             },
-            value:{
-                type:DataTypes.STRING(5),
-                allowNull:false
+            value: {
+                type: DataTypes.STRING(5),
+                allowNull: false,
             },
             status: {
                 type: DataTypes.BOOLEAN,
@@ -43,7 +39,6 @@ module.exports = (sequelize, DataTypes) => {
             sequelize,
             modelName: "Service",
             timestamps: true,
-
         }
     );
     return Service;

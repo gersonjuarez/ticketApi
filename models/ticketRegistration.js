@@ -14,11 +14,9 @@ module.exports = (sequelize, DataTypes) => {
             TicketRegistration.belongsTo(models.Cashier, {
                 foreignKey: "idCashier",
             });
-           
         }
     }
     TicketRegistration.init(
-      
         {
             idTicketRegistration: {
                 allowNull: false,
@@ -47,15 +45,19 @@ module.exports = (sequelize, DataTypes) => {
                 allowNull: true,
             },
             status: {
-                type: DataTypes.INTEGER,
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: true,
             },
-           
+            correlativo: {
+                type: DataTypes.STRING,
+                allowNull: true,
+            },
         },
         {
             sequelize,
             modelName: "TicketRegistration",
             timestamps: true,
-       
         }
     );
     return TicketRegistration;

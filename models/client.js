@@ -22,26 +22,32 @@ module.exports = (sequelize, DataTypes) => {
                 primaryKey: true,
                 type: DataTypes.INTEGER,
             },
-            dpi: {
-                type: DataTypes.INTEGER,
-                allowNull: false,
-            },
             name: {
                 type: DataTypes.STRING(50),
                 allowNull: false,
             },
-           /*  idService:{
-                type:DataTypes.INTEGER,
-                allowNull:false
+            dpi: {
+                type: DataTypes.STRING(15),
+                allowNull: false,
             },
-            ticketNumber:{
-                type:DataTypes.STRING(100),
-                allowNull:false
-            } */
+            telefono: {
+                type: DataTypes.STRING(20),
+                allowNull: true,
+            },
+            correo: {
+                type: DataTypes.STRING(50),
+                allowNull: true,
+            },
+            status: {
+                type: DataTypes.BOOLEAN,
+                allowNull: false,
+                defaultValue: true,
+            },
         },
         {
             sequelize,
             modelName: "Client",
+            timestamps: true,
         }
     );
     return Client;
