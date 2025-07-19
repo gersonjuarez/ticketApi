@@ -28,7 +28,7 @@ module.exports = (sequelize, DataTypes) => {
             },
             dpi: {
                 type: DataTypes.STRING(15),
-                allowNull: false,
+                allowNull: true,
             },
             telefono: {
                 type: DataTypes.STRING(20),

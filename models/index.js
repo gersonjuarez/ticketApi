@@ -2,7 +2,7 @@
 const fs = require("fs");
 const path = require("path");
 const Sequelize = require("sequelize");
-const env = process.env.DB
+const env = process.env.DB || 'test1'
 
 const config = require(__dirname + "/../config/config.json")[env];
 
@@ -11,7 +11,7 @@ let sequelize;
 if (config?.url) {
     sequelize = new Sequelize(config?.url, config);
 } else {
-    sequelize = new Sequelize(config?.db, config?.user, config?.password, config);
+   sequelize = new Sequelize(config.database, config.username, config.password, config);
 }
 
 

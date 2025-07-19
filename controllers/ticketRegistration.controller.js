@@ -41,29 +41,61 @@ exports.findById = async (req, res) => {
 };
 
 // POST /api/ticket-registration
+// POST /api/ticket-registration
 exports.create = async (req, res, next) => {
   try {
     const { dpi, name, idService: idServiceRaw } = req.body;
     const idService = typeof idServiceRaw === 'string' ? parseInt(idServiceRaw, 10) : idServiceRaw;
-    console.log("VALOR DE BODY: ", req.body);
-    const [client] = await require('../models').Client.findOrCreate({
-      where: { dpi },
-      defaults: { name, dpi }
-    });
 
-    console.log("valor de client: ",client)
-    // 2) servicio & turno
+    console.log("VALOR DE BODY: ", req.body);
+
+    // Validación básica de nombre
+    if (!name || name.trim() === "") {
+      return res.status(400).json({ message: 'El nombre es obligatorio.' });
+    }
+
+    // Validación opcional de DPI (si se envía)
+    if (dpi && !/^\d{13}$/.test(dpi)) {
+      return res.status(400).json({ message: 'El DPI debe tener 13 dígitos numéricos.' });
+    }
+
+    // 1) Cliente: buscar o crear (si viene DPI); crear sin buscar si es null
+    const Client = require('../models').Client;
+    let client;
+
+    if (dpi) {
+      [client] = await Client.findOrCreate({
+        where: { dpi },
+        defaults: { name, dpi }
+      });
+    } else {
+      client = await Client.create({ name, dpi: null });
+    }
+
+    console.log("valor de client:", client);
+
+    // 2) Validar servicio
     const Service = require('../models').Service;
     const service = await Service.findByPk(idService);
-    console.log("VALOR DE SERVICIO: ",service)
-    if (!service) return res.status(404).json({ message: 'Servicio no encontrado.' });
-    const lastTurn = await require('../models').TicketRegistration.max('turnNumber', { where: { idService } }) || 0;
-    console.log("VALOR DE LASTTURN: ",lastTurn);
+    console.log("VALOR DE SERVICIO:", service);
+
+    if (!service) {
+      return res.status(404).json({ message: 'Servicio no encontrado.' });
+    }
+
+    // 3) Obtener último turno y generar nuevo
+    const lastTurn = await require('../models').TicketRegistration.max('turnNumber', {
+      where: { idService }
+    }) || 0;
+
+    console.log("VALOR DE LASTTURN:", lastTurn);
+
     const turnNumber = lastTurn + 1;
     const correlativo = `${service.prefix}-${turnNumber}`;
 
+    // 4) Crear ticket
     let ticket;
-    try{
+    try {
       ticket = await require('../models').TicketRegistration.create({
         turnNumber,
         idTicketStatus: 1,
@@ -79,17 +111,11 @@ exports.create = async (req, res, next) => {
       console.error('Parameters:', err.parameters);
       return next(err);
     }
-    // 4) historial
-  /*   await require('../models').TicketHistory.create({
-      idTicket: ticket.idTicketRegistration,
-      fromStatus: null,
-      toStatus: 1,
-      changedByUser: null
-    }); */
 
-    // 5) emitir a la sala del servicio (normalizado a minúsculas)
+    // 5) Emitir por socket.io al room del servicio
     const io = require('../server/socket').getIo();
     const room = service.prefix.toLowerCase();
+
     console.log(`🔔 Emitting new-ticket to room → '${room}'`);
     io.to(room).emit('new-ticket', {
       idTicketRegistration: ticket.idTicketRegistration,
@@ -99,7 +125,8 @@ exports.create = async (req, res, next) => {
       name: service.name,
       createdAt: ticket.createdAt
     });
-    // TEST: emitir a todos los clientes (broadcast global)
+
+    // Emitir broadcast global también
     io.emit('new-ticket', {
       idTicketRegistration: ticket.idTicketRegistration,
       turnNumber,
@@ -114,6 +141,7 @@ exports.create = async (req, res, next) => {
     next(err);
   }
 };
+
 
 // GET /api/ticket-registration/:prefix
 exports.getTicketsByPrefix = async (req, res, next) => {
@@ -171,7 +199,31 @@ exports.update = async (req, res) => {
     res.status(400).json({ error: error.message });
   }
 };
+exports.getPendingTickets = async (req, res) => {
+  try {
+    const Client = require('../models').Client;
 
+    const tickets = await TicketRegistration.findAll({
+      where: { idTicketStatus: 1 },
+      include: [{ model: Client }],
+      order: [['createdAt', 'ASC']]
+    });
+
+    const payload = tickets.map((t) => ({
+      idTicketRegistration: t.idTicketRegistration,
+      correlativo: t.correlativo,
+      usuario: t.Client?.dpi || t.Client?.name || 'Sin cliente',
+      modulo: t.modulo || '—', // puedes ajustar según tu lógica
+      createdAt: t.createdAt,
+      idTicketStatus: t.idTicketStatus
+    }));
+
+    res.json(payload);
+  } catch (error) {
+    console.error('Error al obtener tickets pendientes:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
 exports.delete = async (req, res) => {
   try {
     const deleted = await TicketRegistration.destroy({
