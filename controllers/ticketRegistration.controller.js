@@ -45,20 +45,17 @@ exports.create = async (req, res, next) => {
   try {
     const { dpi, name, idService: idServiceRaw } = req.body;
     const idService = typeof idServiceRaw === 'string' ? parseInt(idServiceRaw, 10) : idServiceRaw;
-    console.log("VALOR DE BODY: ", req.body);
+
     const [client] = await require('../models').Client.findOrCreate({
       where: { dpi },
       defaults: { name, dpi }
     });
 
-    console.log("valor de client: ",client)
     // 2) servicio & turno
     const Service = require('../models').Service;
     const service = await Service.findByPk(idService);
-    console.log("VALOR DE SERVICIO: ",service)
     if (!service) return res.status(404).json({ message: 'Servicio no encontrado.' });
     const lastTurn = await require('../models').TicketRegistration.max('turnNumber', { where: { idService } }) || 0;
-    console.log("VALOR DE LASTTURN: ",lastTurn);
     const turnNumber = lastTurn + 1;
     const correlativo = `${service.prefix}-${turnNumber}`;
 
@@ -74,9 +71,7 @@ exports.create = async (req, res, next) => {
         correlativo
       });
     } catch (err) {
-      console.error('Sequelize Error:', err.message);
-      console.error('SQL:', err.sql);
-      console.error('Parameters:', err.parameters);
+    
       return next(err);
     }
     // 4) historial
