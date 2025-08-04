@@ -3,7 +3,7 @@ const { Service } = require('../models');
 
 exports.findAll = async (req, res) => {
   try {
-    const services = await Service.findAll();
+    const services = await Service.findAll({where: { status: 1 }});
     res.json(services);
   } catch (error) {
     res.status(500).json({ error: error.message });
