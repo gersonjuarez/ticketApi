@@ -10,9 +10,12 @@ const clientRoutes = require("../routes/client.routes");
 const serviceRoutes = require("../routes/service.routes");
 const cashierRoutes = require("../routes/cashier.routes");
 const dashbordRoutes = require("../routes/dashboard.routes.js");
+const userRoutes = require("../routes/user.routes.js");
 const { init, getIo } = require('./socket');
 const { notFound, errorHandler } = require("../middlewares/errorHandler");
 const authRequired = require('../middlewares/authRequired');
+const { loadBranding } = require("./branding.js");
+
 
 const corsConfig = {
   origin: '*',           // o ['http://localhost:5173'] si quieres restringir
@@ -23,6 +26,7 @@ const corsConfig = {
 
 class Servidor {
   constructor() {
+    loadBranding();
     this.app = express();
     this.port = process.env.PORT || 3001;
     this.paths = { route: "/api" };
@@ -53,7 +57,7 @@ class Servidor {
     this.app.use(this.paths.route,  serviceRoutes);
     this.app.use(this.paths.route,  cashierRoutes);
     this.app.use(this.paths.route, dashbordRoutes);
-
+    this.app.use(this.paths.route, userRoutes);
     // 404 + handler de errores
     this.app.use(notFound);
     this.app.use(errorHandler);

@@ -3,7 +3,9 @@ const { Service } = require('../models');
 
 exports.findAll = async (req, res) => {
   try {
-    const services = await Service.findAll({where: { status: 1 }});
+    const services = await Service.findAll({
+      order: [['createdAt', 'DESC']],
+    });
     res.json(services);
   } catch (error) {
     res.status(500).json({ error: error.message });

@@ -47,7 +47,7 @@ module.exports = (sequelize, DataTypes) => {
             },
             idCashier:{
                 type:DataTypes.INTEGER,
-                allowNull:false
+                allowNull:true
             }
         },
         {
