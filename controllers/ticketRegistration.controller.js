@@ -1,47 +1,110 @@
 // controllers/ticketController.js
 const { Op } = require('sequelize');
-const { TicketRegistration, Client, Service, sequelize } = require('../models');
+const {
+  TicketRegistration,
+  Client,
+  Service,
+  sequelize,
+} = require('../models');
 
-// ---- helper para unificar el payload que espera el front ----
+/* ============================
+   Helpers
+============================ */
+
+/** Devuelve [startOfDay, endOfDay) en hora del servidor */
+const getTodayBounds = () => {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 1);
+  return { start, end };
+};
+
+/** Normaliza payload hacia el front (para listados/detalle) */
 const toTicketPayload = (ticket, client = null, service = null) => ({
   idTicketRegistration: ticket.idTicketRegistration,
+  turnNumber: ticket.turnNumber, // <-- agregado
   correlativo: ticket.correlativo,
+  prefix: (service?.prefix ?? ticket.Service?.prefix) || undefined, // <-- agregado
   usuario: (client?.name ?? ticket.Client?.name) || 'Sin cliente',
   modulo: (service?.name ?? ticket.Service?.name) || '—',
   createdAt: ticket.createdAt,
   idTicketStatus: ticket.idTicketStatus,
 });
 
-// === LISTAR PENDIENTES (status 1) con filtro opcional por prefijo ===
+/** Payload específico para responder al crear (para RN) */
+const toCreatedTicketPayload = ({ ticket, client, service, cashier = null }) => ({
+  idTicketRegistration: ticket.idTicketRegistration,
+  turnNumber: ticket.turnNumber,
+  correlativo: ticket.correlativo,
+  prefix: service.prefix,
+  createdAt: ticket.createdAt,
+  idTicketStatus: ticket.idTicketStatus,
+  // datos de cliente (por si quieres mostrarlos)
+  client: client
+    ? { idClient: client.idClient, name: client.name, dpi: client.dpi || null }
+    : null,
+  // datos de servicio
+  service: {
+    idService: service.idService,
+    name: service.name,
+    prefix: service.prefix,
+  },
+  // datos de caja (si la asignan en la creación; ahora es null)
+  idCashier: ticket.idCashier ?? null,
+  cashier: cashier
+    ? { idCashier: cashier.idCashier, name: cashier.name }
+    : null,
+});
+
+/** Intenta determinar si un error es de clave única / duplicado */
+const isUniqueError = (err) => {
+  if (!err) return false;
+  const msg = String(err.message || '').toLowerCase();
+  return (
+    err.name === 'SequelizeUniqueConstraintError' ||
+    msg.includes('unique') ||
+    msg.includes('duplicate') ||
+    msg.includes('duplicada') ||
+    msg.includes('duplicado')
+  );
+};
+
+/* ============================
+   Listados simples
+============================ */
+
+/** LISTAR PENDIENTES (status 1) con filtro opcional por prefijo */
 exports.findAll = async (req, res) => {
   try {
     const { prefix } = req.query;
     const where = {
       idTicketStatus: 1,
-      ...(prefix ? { correlativo: { [Op.like]: `${prefix}-%` } } : {})
+      ...(prefix ? { correlativo: { [Op.like]: `${prefix}-%` } } : {}),
     };
-    const tickets = await TicketRegistration.findAll({ where });
-    res.json(tickets);
+    const tickets = await TicketRegistration.findAll({ where, include: [{ model: Service }] }); // <-- incluye Service para prefix en payload
+    res.json(tickets.map((t) => toTicketPayload(t)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-// === LISTAR EN ATENCIÓN / DESPACHADOS (status 2) ===
+/** LISTAR EN ATENCIÓN / DESPACHADOS (status 2) con filtro opcional por prefijo */
 exports.findAllDispatched = async (req, res) => {
   try {
     const { prefix } = req.query;
     const where = {
       idTicketStatus: 2,
-      ...(prefix ? { correlativo: { [Op.like]: `${prefix}-%` } } : {})
+      ...(prefix ? { correlativo: { [Op.like]: `${prefix}-%` } } : {}),
     };
-    const tickets = await TicketRegistration.findAll({ where });
-    res.json(tickets);
+    const tickets = await TicketRegistration.findAll({ where, include: [{ model: Service }] }); // <-- incluye Service
+    res.json(tickets.map((t) => toTicketPayload(t)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
+/** OBTENER DETALLE */
 exports.findById = async (req, res) => {
   try {
     const ticket = await TicketRegistration.findByPk(req.params.id, {
@@ -54,108 +117,149 @@ exports.findById = async (req, res) => {
   }
 };
 
-// === CREAR TICKET (dispara impresión y emite socket enriquecido) ===
-exports.create = async (req, res, next) => {
-  const t = await sequelize.transaction();
-  try {
-    const { dpi, name, idService: idServiceRaw, locationId } = req.body;
-    console.log('[create] body:', req.body);
+/* ============================
+   CREAR TICKET con reintento
+============================ */
 
-    const idService = typeof idServiceRaw === 'string' ? parseInt(idServiceRaw, 10) : idServiceRaw;
+exports.create = async (req, res, next) => {
+  const { dpi, name, idService: idServiceRaw, locationId } = req.body;
+  try {
+    const idService =
+      typeof idServiceRaw === 'string' ? parseInt(idServiceRaw, 10) : idServiceRaw;
 
     if (!name || name.trim() === '') {
-      await t.rollback();
       return res.status(400).json({ message: 'El nombre es obligatorio.' });
     }
     if (dpi && !/^\d{13}$/.test(dpi)) {
-      await t.rollback();
       return res.status(400).json({ message: 'El DPI debe tener 13 dígitos numéricos.' });
     }
 
-    // 1) Cliente
+    // 1) Cliente (fuera del retry; su DPI es único y estable)
     let client;
     if (dpi) {
-      [client] = await Client.findOrCreate({
+      const [c] = await Client.findOrCreate({
         where: { dpi },
         defaults: { name, dpi },
-        transaction: t,
       });
+      client = c;
     } else {
-      client = await Client.create({ name, dpi: null }, { transaction: t });
+      client = await Client.create({ name, dpi: null });
     }
 
     // 2) Servicio
-    const service = await Service.findByPk(idService, { transaction: t });
+    const service = await Service.findByPk(idService);
     if (!service) {
-      await t.rollback();
       return res.status(404).json({ message: 'Servicio no encontrado.' });
     }
 
-    // 3) Turno correlativo por servicio
-    const lastTurn =
-      (await TicketRegistration.max('turnNumber', {
-        where: { idService },
-        transaction: t,
-      })) || 0;
+    // 3) Reintento de creación (para resolver colisiones)
+    const maxAttempts = 3;
+    let createdTicket = null;
+    let lastErr = null;
 
-    const turnNumber = lastTurn + 1;
-    const correlativo = `${service.prefix}-${turnNumber}`;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      const t = await sequelize.transaction();
+      try {
+        const { start, end } = getTodayBounds();
 
-    // 4) Crear ticket
-    const ticket = await TicketRegistration.create(
-      {
-        turnNumber,
-        idTicketStatus: 1,
-        idClient: client.idClient,
-        idService,
-        idCashier: null,
-        status: true,
-        correlativo,
-      },
-      { transaction: t }
-    );
+        // (a) Calcular MAX(turnNumber) sólo del día actual y servicio
+        const lastTurnToday =
+          (await TicketRegistration.max('turnNumber', {
+            where: {
+              idService,
+              createdAt: { [Op.gte]: start, [Op.lt]: end },
+            },
+            transaction: t,
+          })) || 0;
 
-    await t.commit();
+        const turnNumber = lastTurnToday + 1;
+        const correlativo = `${service.prefix}-${turnNumber}`;
 
-    // ====== EMITIR EVENTOS SOCKET (con payload enriquecido) ======
-    const io = require('../server/socket').getIo();
-    const room = service.prefix.toLowerCase();
+        // (b) Crear ticket
+        const ticket = await TicketRegistration.create(
+          {
+            turnNumber,
+            idTicketStatus: 1, // pendiente
+            idClient: client.idClient,
+            idService,
+            idCashier: null,
+            status: true,
+            correlativo,
+          },
+          { transaction: t }
+        );
 
-    const payload = toTicketPayload(ticket, client, service); // <-- incluye usuario y modulo
+        await t.commit();
+        createdTicket = ticket;
+        lastErr = null;
+        break; // éxito -> salimos del bucle
+      } catch (err) {
+        // rollback seguro
+        try { if (t.finished !== 'commit') await t.rollback(); } catch {}
+        lastErr = err;
 
-    // a) Eventos para pantallas/TV (room específico + broadcast)
-    io.to(room).emit('new-ticket', payload);
-    io.emit('new-ticket', payload);
-
-    // b) Imprimir (si mandaron locationId)
-    if (locationId) {
-      console.log('[create] enviando print-ticket a bridge:%s', locationId);
-      const printJob = {
-        type: 'escpos',
-        payload: {
-          header: 'SISTEMA DE TURNOS',
-          subHeader: service.name,
-          ticketNumber: correlativo,
-          name,
-          dpi: dpi || '',
-          service: service.name,
-          footer: 'Gracias por su visita',
-          qrData: `TICKET:${correlativo}`,
-        },
-      };
-      io.to(`bridge:${locationId}`).emit('print-ticket', printJob);
-    } else {
-      console.warn('[create] sin locationId, no se imprime');
+        if (isUniqueError(err) && attempt < maxAttempts) {
+          await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 25) + 10));
+          continue; // reintentar
+        }
+        break;
+      }
     }
 
-    return res.status(201).json(ticket);
+    if (!createdTicket) {
+      if (lastErr) return next(lastErr);
+      return res.status(500).json({ message: 'No se pudo crear el ticket.' });
+    }
+
+    // ====== EMITIR EVENTOS SOCKET (con payload enriquecido) ======
+    const io = require('../server/socket').getIo?.();
+    const room = String(service.prefix || '').toLowerCase();
+
+    // payload unificado para sockets
+    const socketPayload = toTicketPayload(createdTicket, client, service);
+
+    if (io) {
+      io.to(room).emit('new-ticket', socketPayload);
+      io.emit('new-ticket', socketPayload);
+
+      // Imprimir (si mandaron locationId)
+      if (locationId) {
+        const printJob = {
+          type: 'escpos',
+          payload: { 
+            header: 'SISTEMA DE TURNOS',
+            subHeader: service.name,
+            ticketNumber: socketPayload.correlativo,
+            name,
+            dpi: dpi || '',
+            service: service.name,
+            footer: 'Gracias por su visita',
+            dateTime: new Date().toLocaleString(),
+          },
+        };
+        io.to(`bridge:${locationId}`).emit('print-ticket', printJob);
+      }
+    }
+
+    // ====== RESPUESTA INMEDIATA AL FRONT (RN) ======
+    const responsePayload = toCreatedTicketPayload({
+      ticket: createdTicket,
+      client,
+      service,
+      cashier: null, // aún no asignado
+    });
+
+    return res.status(201).json(responsePayload);
   } catch (err) {
-    if (t.finished !== 'commit') await t.rollback();
-    next(err);
+    return next(err);
   }
 };
 
-// === LISTAR POR PREFIX (todos status con status=true) ===
+/* ============================
+   Otros listados / update / delete
+============================ */
+
+/** LISTAR POR PREFIX (todos status con status=true) */
 exports.getTicketsByPrefix = async (req, res, next) => {
   try {
     const { prefix } = req.params;
@@ -164,7 +268,7 @@ exports.getTicketsByPrefix = async (req, res, next) => {
 
     const tickets = await TicketRegistration.findAll({
       where: { idService: service.idService, status: true },
-      order: [['turnNumber', 'ASC']]
+      order: [['turnNumber', 'ASC']],
     });
 
     const payload = tickets.map((t) => ({
@@ -173,7 +277,7 @@ exports.getTicketsByPrefix = async (req, res, next) => {
       correlativo: t.correlativo,
       createdAt: t.createdAt,
       prefix: service.prefix,
-      name: service.name
+      name: service.name,
     }));
 
     return res.json(payload);
@@ -182,22 +286,24 @@ exports.getTicketsByPrefix = async (req, res, next) => {
   }
 };
 
-// === UPDATE (emite ticket-updated enriquecido) ===
+/** UPDATE (emite ticket-updated enriquecido) */
 exports.update = async (req, res) => {
   try {
     const [updated] = await TicketRegistration.update(req.body, {
-      where: { idTicketRegistration: req.params.id }
+      where: { idTicketRegistration: req.params.id },
     });
     if (!updated) return res.status(404).json({ error: 'Not found' });
 
-    // Traemos el ticket con relaciones para emitir datos completos
+    // Traer con relaciones para emitir
     const updatedTicket = await TicketRegistration.findByPk(req.params.id, {
       include: [{ model: Client }, { model: Service }],
     });
 
-    const io = require('../server/socket').getIo();
-    const payload = toTicketPayload(updatedTicket); // <-- incluye usuario, modulo e idTicketStatus
-    io.emit('ticket-updated', payload);
+    const io = require('../server/socket').getIo?.();
+    if (io && updatedTicket) {
+      const payload = toTicketPayload(updatedTicket);
+      io.emit('ticket-updated', payload);
+    }
 
     res.json(updatedTicket);
   } catch (error) {
@@ -205,16 +311,14 @@ exports.update = async (req, res) => {
   }
 };
 
-// === LISTAR por STATUS (1 ó 2) incluyendo Client y Service ===
+/** LISTAR por STATUS (1 ó 2) incluyendo Client y Service */
 exports.getPendingTickets = async (req, res) => {
   try {
     const status = parseInt(req.query.status || 1, 10);
-    console.log('Obteniendo tickets con status:', status);
-
     const tickets = await TicketRegistration.findAll({
       where: { idTicketStatus: status },
       include: [{ model: Client }, { model: Service }],
-      order: [['createdAt', 'ASC']]
+      order: [['createdAt', 'ASC']],
     });
 
     const payload = tickets.map((t) => toTicketPayload(t));
@@ -225,13 +329,13 @@ exports.getPendingTickets = async (req, res) => {
   }
 };
 
-// === DELETE ===
+/** DELETE */
 exports.delete = async (req, res) => {
   try {
     const deleted = await TicketRegistration.destroy({
-      where: { idTicketRegistration: req.params.id }
+      where: { idTicketRegistration: req.params.id },
     });
-    if (!deleted) return res.status(404).json({ error: 'Not found' });
+  if (!deleted) return res.status(404).json({ error: 'Not found' });
     res.json({ deleted: true });
   } catch (error) {
     res.status(500).json({ error: error.message });
