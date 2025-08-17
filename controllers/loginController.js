@@ -1,131 +1,166 @@
-
-const { Model } = require("sequelize");
+// controllers/loginController.js
+const bcrypt = require("bcryptjs");
+const jwt = require("jsonwebtoken");
 const db = require("../models");
-const bcryptjs = require("bcryptjs");
-const User = db.User;
-const Service = db.Service;
-const Cashier = db.Cashier;
-const Op = db.Sequelize.Op;
-const sequelize = db.sequelize;
+const { ApiError } = require("../middlewares/errorHandler");
+const tokenBlacklist = require("../utils/tokenBlacklist");
 
-
+const { User, Service, Cashier, sequelize, Sequelize } = db;
+const { Op } = Sequelize;
 
 module.exports = {
+  // POST /api/register
+  register: async (req, res) => {
+    const t = await sequelize.transaction();
+    try {
+      const { userName, password, idRole, idCashier, email, fullName } = req.body;
 
+      const username = String(userName).trim();
+      const emailNorm = email ? String(email).trim().toLowerCase() : null;
+      const fullNameNorm = String(fullName || "").trim();
 
+      const exists = await User.findOne({
+        where: { [Op.or]: [{ username }, { email: emailNorm }] },
+        transaction: t,
+      });
+      if (exists) throw new ApiError("El usuario o email ya existe", 409);
 
-            async register(req,res){
+      const hash = await bcrypt.hash(password, 10);
 
-                const t = await sequelize.transaction();
-                console.log("ENTRA PARA REGISTRAR: ",req.body);
+      const user = await User.create(
+        {
+          username,
+          email: emailNorm,
+          fullName: fullNameNorm,
+          password: hash,
+          idRole,
+          idCashier,
+          status: true,
+        },
+        { transaction: t }
+      );
 
-                try {
-                  const {userName,password,idRole,idCashier,email,fullName}=req.body
-    
-                    let salt = bcryptjs.genSaltSync();
-                   const passwordTemp = bcryptjs.hashSync(password, salt);
-                    
-                    const userr = await User.create(
-                        {
-                            username:userName,
-                            email,
-                            fullName,
-                            password:passwordTemp,
-                            idRole,
-                            idCashier
-                        },
-                        { transaction: t }
-                    );
+      await t.commit();
 
-                    await t.commit();
+      res.status(201).json({
+        ok: true,
+        user: {
+          id: user.idUser ?? user.id,
+          username: user.username,
+          fullName: user.fullName,
+          email: user.email,
+          idRole: user.idRole,
+          idCashier: user.idCashier,
+          status: user.status,
+        },
+      });
+    } catch (error) {
+      if (t.finished !== "commit") await t.rollback();
+      throw error;
+    }
+  },
 
-                    res.status(200).json("Usuario registrado")
-                
-                } catch (error) {
-                    console.log("error: " + error);
+  // POST /api/login
+  login: async (req, res) => {
+    const { user, password } = req.body;
+    const usernameOrEmail = String(user || "").trim();
 
-                    await t.rollback();
-                    res.status(400).json({ error: error});
-                }
+    const where = {
+      [Op.or]: [{ username: usernameOrEmail }, { email: usernameOrEmail.toLowerCase() }],
+      status: true,
+    };
 
-            },
+    const userLogin = await User.findOne({
+      where,
+      include: [
+        {
+          model: Cashier,
+          attributes: ["idCashier", "name"],
+          include: [{ model: Service, attributes: ["idService", "name", "prefix"] }],
+          required: false,
+        },
+      ],
+      attributes: ["idUser","username","idRole","idCashier","password","email","fullName","status"],
+    });
 
-            async login(req,res){
+    if (!userLogin) throw new ApiError("Usuario o Contraseña Incorrecto.", 401);
 
-                const t = await sequelize.transaction();
+    const ok = await bcrypt.compare(password, userLogin.password);
+    if (!ok) throw new ApiError("Usuario o Contraseña Incorrecto.", 401);
 
-                try {
-                    console.log("ENTRA PARA LOGEAR: ",req.body);
-                    const {user,password}=req.body;
-                    const userLogin= await User.findOne(
-                        {
-                            where:[
-                                {username:user},
-                                { status:true}],
-                            include:[
-                                {
-                                    model: Cashier,
-                                    attributes: ["idCashier", "name"],
-                                    include: [
-                                        {
-                                            model: Service,
-                                            attributes: ["idService", "name", "prefix"]
-                                        }
-                                    ]
-                                },
-                                
-                            ],
-                            attributes:["username","idRole","idCashier","password","email","fullName","status"],
-                        }
-                    )
+    // Generar JWT
+    const token = jwt.sign(
+      {
+        sub: userLogin.idUser,
+        username: userLogin.username,
+        role: userLogin.idRole,
+      },
+      process.env.JWT_SECRET,
+      { expiresIn: process.env.JWT_EXPIRES_IN || "8h" }
+    );
 
-                    if (!userLogin) {
-                        return res
-                            .status(401)
-                            .json({ errors: [{ msg: "Usuario o Contraseña Incorrecto." }] });
-                    }
-        
-                    // Verificar la contraseña
-                    const validPassword = bcryptjs.compareSync(
-                        password,
-                        userLogin.password
-                    );
-                    if (!validPassword) {
-                        return res
-                            .status(401)
-                            .json({ errors: [{ msg: "Usuario o Contraseña Incorrecto." }] });
-                    }
-
-                    return res.send({
-                        username: userLogin.username,
-                        fullName: userLogin.fullName,
-                        email: userLogin.email,
-                        idRole: userLogin.idRole,
-                        idCashier: userLogin.idCashier,
-                        status: userLogin.status,
-                        cashier: {
-                            idCashier: userLogin.Cashier.idCashier,
-                            name: userLogin.Cashier.name,
-                            service: {
-                                idService: userLogin.Cashier.Service.idService,
-                                name: userLogin.Cashier.Service.name,
-                                prefix: userLogin.Cashier.Service.prefix
-                            }
-                        }
-                    });
-
-                } catch (error) {
-                    console.log("Valor de error: ",error)
-                    res.status(500).json({
-                        msg: "Ocurrio un error hable con el administrador",
-                    });
-                }
-
-
-
+res.json({
+  ok: true,
+  token,
+  username: userLogin.username,
+  fullName: userLogin.fullName,
+  email: userLogin.email,
+  idRole: userLogin.idRole,
+  idCashier: userLogin.idCashier,
+  status: userLogin.status,
+  // ⬇️ agrega esto si quieres que el front no decode el JWT
+  idUser: userLogin.idUser,
+  userSession: {
+    idUser: userLogin.idUser,
+    idRole: userLogin.idRole,
+    idCashier: userLogin.idCashier,
+    username: userLogin.username,
+    fullName: userLogin.fullName,
+    email: userLogin.email,
+    status: userLogin.status,
+    service: userLogin.Cashier?.Service
+      ? {
+          idService: userLogin.Cashier.Service.idService,
+          name: userLogin.Cashier.Service.name,
+          prefix: userLogin.Cashier.Service.prefix,
+        }
+      : null,
+  },
+  cashier: userLogin.Cashier
+    ? {
+        idCashier: userLogin.Cashier.idCashier,
+        name: userLogin.Cashier.name,
+        service: userLogin.Cashier.Service
+          ? {
+              idService: userLogin.Cashier.Service.idService,
+              name: userLogin.Cashier.Service.name,
+              prefix: userLogin.Cashier.Service.prefix,
             }
+          : null,
+      }
+    : null,
+});
+  },
 
+  // POST /api/logout
+  logout: async (_req, res) => {
+    try {
+      if (_req.session) {
+        await new Promise((resolve) => _req.session.destroy(() => resolve()));
+      }
 
+      const auth = _req.headers?.authorization;
+      const bearer = auth && auth.startsWith("Bearer ") ? auth.slice(7) : null;
+      if (bearer) {
+        tokenBlacklist.add(bearer, 60 * 60 * 24);
+      }
 
+      res.clearCookie("token", { httpOnly: true, sameSite: "lax", secure: true });
+      res.clearCookie("connect.sid");
 
-}
+      return res.json({ ok: true, message: "Sesión cerrada" });
+    } catch (e) {
+      throw new ApiError("No se pudo cerrar sesión", 500);
+    }
+  },
+};
