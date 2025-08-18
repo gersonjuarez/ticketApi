@@ -16,10 +16,9 @@ const { notFound, errorHandler } = require("../middlewares/errorHandler");
 const authRequired = require('../middlewares/authRequired');
 const { loadBranding } = require("./branding.js");
 
-
 const corsConfig = {
-  origin: '*',           // o ['http://localhost:5173'] si quieres restringir
-  credentials: false,    // bearer token -> false; si usas cookies, true (y no puedes usar '*')
+  origin: '*', // en prod: ['https://tu-admin.netlify.app', 'https://tu-app-web.netlify.app']
+  credentials: false,
   methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
   allowedHeaders: ['Content-Type','Authorization'],
 };
@@ -46,19 +45,36 @@ class Servidor {
   }
 
   routes() {
-    // Públicas de auth
+    // ✅ RUTAS DE SALUD (antes de todo)
+    this.app.head("/", (_req, res) => res.status(200).end());
+    this.app.get("/", (_req, res) => res.send("API OK"));
+    this.app.get("/healthz", (_req, res) => res.status(200).send("ok"));
+    this.app.get("/api/dbcheck", async (_req, res) => {
+      try {
+        await db.sequelize.authenticate();
+        const [[r]] = await db.sequelize.query("SELECT 1 AS ok;");
+        res.json({ ok: true, ping: r.ok });
+      } catch (e) {
+        res.status(500).json({ ok: false, error: e.message });
+      }
+    });
+
+    // Públicas
     this.app.use(this.paths.route, authRoutes);
 
-    // === EJEMPLOS DE RUTAS PROTEGIDAS ===
-    // Si quieres proteger TODO el módulo:
+    // Protegidas (si quieres aplicar auth global, descomenta la siguiente línea)
+    // this.app.use(this.paths.route, authRequired);
+
+    // Módulos
     this.app.use(this.paths.route, ticketRegistrationRoutes);
-    this.app.use(this.paths.route,  ticketStatusRoutes);
-    this.app.use(this.paths.route,  clientRoutes);
-    this.app.use(this.paths.route,  serviceRoutes);
-    this.app.use(this.paths.route,  cashierRoutes);
+    this.app.use(this.paths.route, ticketStatusRoutes);
+    this.app.use(this.paths.route, clientRoutes);
+    this.app.use(this.paths.route, serviceRoutes);
+    this.app.use(this.paths.route, cashierRoutes);
     this.app.use(this.paths.route, dashbordRoutes);
     this.app.use(this.paths.route, userRoutes);
-    // 404 + handler de errores
+
+    // ✅ 404 y manejador de errores SIEMPRE al final
     this.app.use(notFound);
     this.app.use(errorHandler);
   }
@@ -106,7 +122,6 @@ class Servidor {
     process.on('SIGTERM', () => this.gracefulShutdown('SIGTERM', 0));
     process.on('SIGINT',  () => this.gracefulShutdown('SIGINT', 0));
     process.on('unhandledRejection', (reason) => {
-      // Si es un error operacional (ApiError), solo loguea y NO apagues el servidor
       if (reason && reason.isOperational) {
         console.error('unhandledRejection (operational):', reason);
       } else {
