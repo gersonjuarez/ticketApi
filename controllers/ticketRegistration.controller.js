@@ -1,6 +1,6 @@
 // controllers/ticketController.js
 const { Op } = require('sequelize');
-const { TicketRegistration, Client, Service, sequelize } = require('../models');
+const { TicketRegistration, Client, Service, TicketHistory, sequelize } = require('../models');
 
 // ---- helper para unificar el payload que espera el front ----
 const toTicketPayload = (ticket, client = null, service = null) => ({
@@ -12,12 +12,12 @@ const toTicketPayload = (ticket, client = null, service = null) => ({
   idTicketStatus: ticket.idTicketStatus,
 });
 
-// === LISTAR PENDIENTES (status 1) con filtro opcional por prefijo ===
+// === LISTAR PENDIENTES Y DESPACHADOS (status 1 y 2) con filtro opcional por prefijo ===
 exports.findAll = async (req, res) => {
   try {
     const { prefix } = req.query;
     const where = {
-      idTicketStatus: 1,
+      idTicketStatus: { [Op.in]: [1] }, // Incluir tanto pendientes como despachados
       ...(prefix ? { correlativo: { [Op.like]: `${prefix}-%` } } : {})
     };
     const tickets = await TicketRegistration.findAll({ where });
@@ -155,7 +155,7 @@ exports.create = async (req, res, next) => {
   }
 };
 
-// === LISTAR POR PREFIX (todos status con status=true) ===
+// === LISTAR POR PREFIX (status 1 y 2 con status=true) ===
 exports.getTicketsByPrefix = async (req, res, next) => {
   try {
     const { prefix } = req.params;
@@ -163,7 +163,11 @@ exports.getTicketsByPrefix = async (req, res, next) => {
     if (!service) return res.status(404).json({ message: 'Servicio no encontrado.' });
 
     const tickets = await TicketRegistration.findAll({
-      where: { idService: service.idService, status: true },
+      where: { 
+        idService: service.idService, 
+        status: true,
+        idTicketStatus: { [Op.in]: [1, 2] } // Incluir pendientes y despachados
+      },
       order: [['turnNumber', 'ASC']]
     });
 
@@ -173,7 +177,9 @@ exports.getTicketsByPrefix = async (req, res, next) => {
       correlativo: t.correlativo,
       createdAt: t.createdAt,
       prefix: service.prefix,
-      name: service.name
+      name: service.name,
+      idTicketStatus: t.idTicketStatus,
+      idCashier: t.idCashier
     }));
 
     return res.json(payload);
@@ -182,37 +188,183 @@ exports.getTicketsByPrefix = async (req, res, next) => {
   }
 };
 
-// === UPDATE (emite ticket-updated enriquecido) ===
-exports.update = async (req, res) => {
+// === NUEVO: OBTENER TICKETS PARA CAJERO ESPECÍFICO ===
+exports.getTicketsForCashier = async (req, res) => {
   try {
-    const [updated] = await TicketRegistration.update(req.body, {
-      where: { idTicketRegistration: req.params.id }
-    });
-    if (!updated) return res.status(404).json({ error: 'Not found' });
+    const { prefix, idCashier } = req.query;
+    console.log('[getTicketsForCashier] prefix:', prefix, 'idCashier:', idCashier);
 
-    // Traemos el ticket con relaciones para emitir datos completos
-    const updatedTicket = await TicketRegistration.findByPk(req.params.id, {
+    const service = await Service.findOne({ where: { prefix } });
+    if (!service) return res.status(404).json({ message: 'Servicio no encontrado.' });
+
+    // 1. Obtener el ticket actual de esta secretaria (estado 2 + su idCashier)
+    const currentTicket = await TicketRegistration.findOne({
+      where: { 
+        idService: service.idService,
+        idTicketStatus: 2, // Despachado/En atención
+        idCashier: idCashier,
+        status: true
+      },
+      include: [{ model: Client }, { model: Service }],
+      order: [['turnNumber', 'ASC']]
+    });
+
+    // 2. Obtener tickets pendientes (estado 1) para la cola
+    const queueTickets = await TicketRegistration.findAll({
+      where: { 
+        idService: service.idService,
+        idTicketStatus: 1, // Solo pendientes
+        status: true
+      },
+      include: [{ model: Client }, { model: Service }],
+      order: [['turnNumber', 'ASC']]
+    });
+
+    const response = {
+      current: currentTicket ? toTicketPayload(currentTicket) : null,
+      queue: queueTickets.map(t => toTicketPayload(t))
+    };
+
+    console.log('[getTicketsForCashier] Respuesta:', response);
+    res.json(response);
+  } catch (error) {
+    console.error('[getTicketsForCashier] Error:', error);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// === UPDATE (emite ticket-updated enriquecido y guarda historial) ===
+exports.update = async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { idCashier, idTicketStatus, observations } = req.body;
+    const ticketId = req.params.id;
+
+    console.log('[UPDATE] Datos recibidos:', { idCashier, idTicketStatus, observations, ticketId });
+
+    // Obtener el ticket actual para comparar estados
+    const currentTicket = await TicketRegistration.findByPk(ticketId, {
+      include: [{ model: Client }, { model: Service }],
+      transaction: t
+    });
+
+    if (!currentTicket) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Ticket no encontrado' });
+    }
+
+    // Verificar si el ticket ya está asignado a otro cajero (solo para estado 2)
+    if (idTicketStatus === 2 && currentTicket.idTicketStatus === 1) {
+      // Verificar si ya hay otro ticket en estado 2 para este servicio con otro cajero
+      const existingDispatchedTicket = await TicketRegistration.findOne({
+        where: {
+          idService: currentTicket.idService,
+          idTicketStatus: 2,
+          idCashier: { [Op.ne]: idCashier } // Diferente cajero
+        },
+        transaction: t
+      });
+
+      if (existingDispatchedTicket) {
+        await t.rollback();
+        return res.status(409).json({ 
+          error: 'Este ticket ya está siendo atendido por otro cajero',
+          conflictTicket: existingDispatchedTicket.correlativo 
+        });
+      }
+    }
+
+    // Siempre actualizar con los nuevos valores
+    const updateData = {
+      idTicketStatus: idTicketStatus || currentTicket.idTicketStatus,
+      idCashier: idCashier || currentTicket.idCashier,
+      ...(observations && { observations })
+    };
+
+    console.log('[UPDATE] Actualizando ticket con:', updateData);
+
+    const [updated] = await TicketRegistration.update(updateData, {
+      where: { idTicketRegistration: ticketId },
+      transaction: t
+    });
+
+    if (!updated) {
+      await t.rollback();
+      return res.status(404).json({ error: 'No se pudo actualizar' });
+    }
+
+    // Crear registro en el historial SIEMPRE con el idUser (del req.body)
+    const historyData = {
+      idTicket: ticketId,
+      fromStatus: currentTicket.idTicketStatus,
+      toStatus: idTicketStatus || currentTicket.idTicketStatus,
+      changedByUser: req.body.changedByUser || 1,
+    };
+
+    console.log('[UPDATE] Creando historial con:', historyData);
+    await TicketHistory.create(historyData, { transaction: t });
+
+    await t.commit();
+
+    // Traemos el ticket actualizado con relaciones
+    const updatedTicket = await TicketRegistration.findByPk(ticketId, {
       include: [{ model: Client }, { model: Service }],
     });
 
     const io = require('../server/socket').getIo();
-    const payload = toTicketPayload(updatedTicket); // <-- incluye usuario, modulo e idTicketStatus
+    const payload = toTicketPayload(updatedTicket);
+    
+    // Emitir eventos específicos según el tipo de cambio
+    if (idTicketStatus === 2 && currentTicket.idTicketStatus === 1) {
+      // Ticket fue despachado/asignado - notificar a todas las secretarias del servicio
+      const room = updatedTicket.Service.prefix.toLowerCase();
+      io.to(room).emit('ticket-assigned', {
+        ...payload,
+        assignedToCashier: idCashier,
+        action: 'dispatched'
+      });
+      console.log(`[UPDATE] Ticket ${updatedTicket.correlativo} asignado a cajero ${idCashier}`);
+      
+    } else if (idTicketStatus === 4) {
+      // Ticket fue completado - notificar para actualizar colas
+      const room = updatedTicket.Service.prefix.toLowerCase();
+      io.to(room).emit('ticket-completed', {
+        ...payload,
+        previousCashier: currentTicket.idCashier,
+        action: 'completed'
+      });
+      console.log(`[UPDATE] Ticket ${updatedTicket.correlativo} completado por cajero ${currentTicket.idCashier}`);
+    }
+    
+    // Evento general para otras pantallas
     io.emit('ticket-updated', payload);
 
+    console.log('[UPDATE] Ticket actualizado exitosamente:', updatedTicket.correlativo);
     res.json(updatedTicket);
   } catch (error) {
+    if (t.finished !== 'commit') await t.rollback();
+    console.error('Error al actualizar ticket:', error);
     res.status(400).json({ error: error.message });
   }
 };
 
-// === LISTAR por STATUS (1 ó 2) incluyendo Client y Service ===
+// === LISTAR por STATUS (1, 2, o custom) incluyendo Client y Service ===
 exports.getPendingTickets = async (req, res) => {
   try {
     const status = parseInt(req.query.status || 1, 10);
     console.log('Obteniendo tickets con status:', status);
 
+    let whereCondition;
+    if (status === 1) {
+      // Si piden status 1, incluir también status 2 para CashierDashboard
+      whereCondition = { idTicketStatus: { [Op.in]: [1, 2] } };
+    } else {
+      // Para otros status, mantener comportamiento específico
+      whereCondition = { idTicketStatus: status };
+    }
+
     const tickets = await TicketRegistration.findAll({
-      where: { idTicketStatus: status },
+      where: whereCondition,
       include: [{ model: Client }, { model: Service }],
       order: [['createdAt', 'ASC']]
     });
