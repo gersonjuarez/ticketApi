@@ -1,6 +1,7 @@
 // server/controllers/user.controller.js
 const { Op } = require('sequelize');
-const bcrypt = require('bcrypt'); // <-- añadir
+const bcrypt = require('bcryptjs');
+ // <-- añadir
 const { User, Role, Cashier } = require('../models');
 
 /** Determina si un idRole corresponde a un rol "Cajero" (por nombre) */
