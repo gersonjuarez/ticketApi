@@ -4,14 +4,15 @@
   "description": "Sistema de tickets",
   "main": "app.js",
   "scripts": {
-    "start": "nodemon app.js",
+    "start": "node app.js",          
+    "dev": "nodemon app.js",       
     "test": "echo \"Error: no test specified\" && exit 1"
   },
-  "author": "",
-  "license": "ISC",
+  "engines": {
+    "node": ">=18 <=22"             
+  },
   "dependencies": {
     "bcrypt": "^5.1.1",
-    "bcryptjs": "^2.4.3",
     "cors": "^2.8.5",
     "dotenv": "^16.4.1",
     "express": "^4.18.2",
@@ -19,11 +20,11 @@
     "joi": "^18.0.0",
     "jsonwebtoken": "^9.0.2",
     "mysql2": "^3.9.1",
-    "nodemon": "^3.0.3",
     "sequelize": "^6.34.0",
     "socket.io": "^4.8.1"
   },
   "devDependencies": {
+    "nodemon": "^3.0.3",
     "sequelize-cli": "^6.6.2"
   }
 }
