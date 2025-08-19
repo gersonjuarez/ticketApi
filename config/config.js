@@ -2,10 +2,10 @@ require('dotenv').config();
 
 module.exports = {
   development: {
-    username: process.env.DB_USER || 'sa',
+    username: process.env.DB_USER || 'root',
     password: process.env.DB_PASS || '',
-    database: process.env.DB_NAME || '',
-    host: process.env.DB_HOST || 'localhost',
+    database: process.env.DB_NAME || 'tickets',
+    host: process.env.DB_HOST || '127.0.0.1',
     port: process.env.DB_PORT || '3306',
     dialect: 'mysql',
     pool: {
@@ -21,7 +21,7 @@ module.exports = {
     username: process.env.DB_USER || 'root',
     password: process.env.DB_PASS || '',
     database: process.env.DB_NAME || 'tickets',
-    host: process.env.DB_HOST || 'localhost',
+    host: process.env.DB_HOST || '127.0.0.1',
     port: process.env.DB_PORT || '3306',
     dialect: 'mysql',
     pool: {

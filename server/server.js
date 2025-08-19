@@ -11,6 +11,9 @@ const serviceRoutes = require("../routes/service.routes");
 const cashierRoutes = require("../routes/cashier.routes");
 const dashbordRoutes = require("../routes/dashboard.routes.js");
 const userRoutes = require("../routes/user.routes.js");
+const rolesRoutes = require("../routes/roles.routes.js");
+const modulesRoutes = require("../routes/modules.routes.js");
+const authRoutesPer = require("../routes/auth.js");
 const { init, getIo } = require('./socket');
 const { notFound, errorHandler } = require("../middlewares/errorHandler");
 const authRequired = require('../middlewares/authRequired');
@@ -73,6 +76,9 @@ class Servidor {
     this.app.use(this.paths.route, cashierRoutes);
     this.app.use(this.paths.route, dashbordRoutes);
     this.app.use(this.paths.route, userRoutes);
+    this.app.use(this.paths.route, rolesRoutes);
+    this.app.use(this.paths.route, modulesRoutes);
+    this.app.use(this.paths.route, authRoutesPer);
 
     // ✅ 404 y manejador de errores SIEMPRE al final
     this.app.use(notFound);
