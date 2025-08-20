@@ -260,7 +260,7 @@ exports.remove = async (req, res) => {
 exports.roles = async (req, res) => {
   try {
     const roles = await Role.findAll({
-      attributes: ['idRole', 'name'],
+      attributes: ['idRole', 'name', 'status'],
       order: [['name', 'ASC']],
     });
     res.json(roles);
