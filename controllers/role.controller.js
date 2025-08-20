@@ -141,7 +141,6 @@ module.exports = {
         include: [
           {
             model: Role,
-            as: "roles", 
             through: { attributes: [] },
             where: { idRole: id },
             required: false,
@@ -158,7 +157,7 @@ module.exports = {
           name: obj.name,
           route: obj.route,
           status: !!obj.status, // 👈 boolean
-          selected: Array.isArray(m.roles) && m.roles.length > 0,
+          selected: Array.isArray(m.Role) && m.Role.length > 0,
         };
       });
 
