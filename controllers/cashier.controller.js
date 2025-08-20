@@ -82,14 +82,14 @@ exports.findAssignedUsers = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+// controllers/users.controller.js (o donde tengas este handler)
+
 exports.assignCashier = async (req, res) => {
   const { id } = req.params; // id del usuario
   const { idCashier, idService } = req.body;
 
   if (!idCashier || !idService) {
-    return res
-      .status(400)
-      .json({ error: "idCashier e idService son requeridos" });
+    return res.status(400).json({ error: "idCashier e idService son requeridos" });
   }
 
   const t = await sequelize.transaction();
@@ -107,9 +107,7 @@ exports.assignCashier = async (req, res) => {
 
     // 2) Ventanilla + su servicio
     const cashier = await Cashier.findByPk(idCashier, {
-      include: [
-        { model: Service, attributes: ["idService", "name", "prefix"] },
-      ],
+      include: [{ model: Service, attributes: ["idService", "name", "prefix"] }],
       transaction: t,
     });
     if (!cashier) {
@@ -122,12 +120,32 @@ exports.assignCashier = async (req, res) => {
     }
     if (Number(cashier.idService) !== Number(idService)) {
       await t.rollback();
-      return res
-        .status(400)
-        .json({ error: "La ventanilla no pertenece al servicio seleccionado" });
+      return res.status(400).json({ error: "La ventanilla no pertenece al servicio seleccionado" });
     }
 
-    // 3) Actualiza asignación (el servicio queda implícito por la ventanilla)
+    // 3) VALIDACIÓN: ¿la ventanilla ya está ocupada por otro usuario?
+    // Permitimos reasignar si es el mismo usuario (idUser === id)
+    const alreadyTaken = await User.findOne({
+      where: {
+        idCashier: cashier.idCashier,
+        idUser: { [Op.ne]: Number(id) }, // distinto usuario
+        // opcional: solo considerar usuarios activos
+        // status: true,
+      },
+      attributes: ['idUser', 'username', 'fullName'],
+      transaction: t,
+      lock: t.LOCK.UPDATE, // ayuda en concurrencia
+    });
+
+    if (alreadyTaken) {
+      await t.rollback();
+      return res.status(409).json({
+        error: "CASHIER_TAKEN",
+        message: `La ventanilla ya está asignada a ${alreadyTaken.fullName || alreadyTaken.username}`,
+      });
+    }
+
+    // 4) Actualiza asignación (el servicio queda implícito por la ventanilla)
     await user.update({ idCashier: cashier.idCashier }, { transaction: t });
 
     await t.commit();
@@ -157,6 +175,14 @@ exports.assignCashier = async (req, res) => {
   } catch (error) {
     if (t.finished !== "commit") await t.rollback();
     console.error(error);
+    // Si usas el índice UNIQUE (abajo), un choque lanzará error de DB → devuelve 409
+    if (error?.name === 'SequelizeUniqueConstraintError') {
+      return res.status(409).json({
+        error: "CASHIER_TAKEN",
+        message: "La ventanilla ya está asignada a otro usuario",
+      });
+    }
     return res.status(500).json({ error: "No se pudo asignar la ventanilla" });
   }
 };
+
