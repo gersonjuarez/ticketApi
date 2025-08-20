@@ -12,9 +12,14 @@ module.exports = (sequelize, DataTypes) => {
       });
       TicketRegistration.belongsTo(models.Service, {
         foreignKey: "idService",
-      });
-      TicketRegistration.belongsTo(models.Cashier, {
+      });      TicketRegistration.belongsTo(models.Cashier, {
         foreignKey: "idCashier",
+      });
+      
+      // Relación con User para el usuario que despachó
+      TicketRegistration.belongsTo(models.User, {
+        foreignKey: "dispatchedByUser",
+        as: "DispatchedBy"
       });
 
       // Relación inversa: un ticket puede tener muchos historiales
@@ -47,10 +52,14 @@ module.exports = (sequelize, DataTypes) => {
       idService: {
         type: DataTypes.INTEGER,
         allowNull: false,
-      },
-      idCashier: {
+      },      idCashier: {
         type: DataTypes.INTEGER,
         allowNull: true,
+      },
+      dispatchedByUser: {
+        type: DataTypes.INTEGER,
+        allowNull: true,
+        comment: 'ID del usuario que despachó el ticket'
       },
       status: {
         type: DataTypes.BOOLEAN,
