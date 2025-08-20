@@ -1,4 +1,3 @@
-// server/tts/gtts.js
 const fs = require('fs');
 const path = require('path');
 const { createHash } = require('crypto');
@@ -35,7 +34,7 @@ function synthesizeGtts(text, lang = 'es') {
 /**
  * Genera/lee MP3 de TTS.
  * @param {{text: string, lang?: string, cache?: boolean}} opts
- * lang: 'es' (genérico), 'es-us' (acento + “neutral” US), 'es-es' (España)
+ * lang: 'es' (genérico), 'es-us' (acento “neutral” US), 'es-es' (España)
  */
 async function getTtsMp3({ text, lang = 'es', cache = true }) {
   if (!text || typeof text !== 'string') throw new Error('text requerido');
