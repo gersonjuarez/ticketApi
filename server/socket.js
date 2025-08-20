@@ -104,6 +104,22 @@ module.exports = {
           `[socket] ${socket.id} suscrito a room de prefix '${room}'`
         );
       });
+
+      /**
+       * Nuevo: Suscripción global para TVs (no depende de prefix)
+       */
+   socket.on("subscribe-tv", () => {
+  socket.join("tv");
+  socket.emit("subscribed-tv", { ok: true, room: "tv" });
+  console.log(`[socket] ${socket.id} suscrito al room global 'tv'`);
+});
+
+
+      /**
+       * Evento de llamada de ticket.
+       * Si se envía un prefix, emite a ese room y también a 'tv'.
+       * Si no, emite a todos.
+       */
       socket.on("call-ticket", (payload = {}) => {
         try {
           const { prefix } = payload || {};
@@ -111,10 +127,10 @@ module.exports = {
             const room = prefix.toLowerCase();
             io.to(room).emit("call-ticket", payload);
             console.log(`[socket] call-ticket → room '${room}':`, payload);
-          } else {
-            io.emit("call-ticket", payload);
-            console.log("[socket] call-ticket → all:", payload);
           }
+          // siempre emitir a TVs
+          io.to("tv").emit("call-ticket", payload);
+          console.log("[socket] call-ticket → room 'tv':", payload);
         } catch (e) {
           console.error("[socket] call-ticket handler error:", e?.message || e);
         }

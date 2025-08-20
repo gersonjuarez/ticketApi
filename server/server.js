@@ -11,16 +11,20 @@ const serviceRoutes = require("../routes/service.routes");
 const cashierRoutes = require("../routes/cashier.routes");
 const dashbordRoutes = require("../routes/dashboard.routes.js");
 const userRoutes = require("../routes/user.routes.js");
-const { init, getIo } = require('./socket');
+const rolesRoutes = require("../routes/roles.routes.js");
+const modulesRoutes = require("../routes/modules.routes.js");
+const authRoutesPer = require("../routes/auth.js");
+const { init, getIo } = require("./socket");
 const { notFound, errorHandler } = require("../middlewares/errorHandler");
-const authRequired = require('../middlewares/authRequired');
+const authRequired = require("../middlewares/authRequired");
 const { loadBranding } = require("./branding.js");
+const ttsRoutes = require("../routes/tts");
 
 const corsConfig = {
-  origin: '*', // en prod: ['https://tu-admin.netlify.app', 'https://tu-app-web.netlify.app']
+  origin: "*", // en prod: ['https://tu-admin.netlify.app', 'https://tu-app-web.netlify.app']
   credentials: false,
-  methods: ['GET','POST','PUT','PATCH','DELETE','OPTIONS'],
-  allowedHeaders: ['Content-Type','Authorization'],
+  methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+  allowedHeaders: ["Content-Type", "Authorization"],
 };
 
 class Servidor {
@@ -73,7 +77,10 @@ class Servidor {
     this.app.use(this.paths.route, cashierRoutes);
     this.app.use(this.paths.route, dashbordRoutes);
     this.app.use(this.paths.route, userRoutes);
-
+    this.app.use(this.paths.route, rolesRoutes);
+    this.app.use(this.paths.route, modulesRoutes);
+    this.app.use(this.paths.route, authRoutesPer);
+    this.app.use("/api/tts", ttsRoutes);
     // ✅ 404 y manejador de errores SIEMPRE al final
     this.app.use(notFound);
     this.app.use(errorHandler);
@@ -86,9 +93,10 @@ class Servidor {
 
     init(httpServer);
 
-    db.sequelize.authenticate()
-      .then(() => console.log('DB OK'))
-      .catch(err => console.error('Fallo conexión DB:', err?.message));
+    db.sequelize
+      .authenticate()
+      .then(() => console.log("DB OK"))
+      .catch((err) => console.error("Fallo conexión DB:", err?.message));
   }
 
   gracefulShutdown = (signal, code = 0) => {
@@ -101,37 +109,37 @@ class Servidor {
         const io = getIo();
         await new Promise((res) => io.close(() => res()));
       } catch (e) {
-        console.error('Error cerrando Socket.IO:', e);
+        console.error("Error cerrando Socket.IO:", e);
       }
       try {
         await db.sequelize.close();
       } catch (e) {
-        console.error('Error cerrando DB:', e);
+        console.error("Error cerrando DB:", e);
       }
-      console.log('Apagado completo.');
+      console.log("Apagado completo.");
       process.exit(code);
     });
 
     setTimeout(() => {
-      console.warn('Forzando salida por timeout...');
+      console.warn("Forzando salida por timeout...");
       process.exit(code);
     }, 10_000).unref();
   };
 
   registerProcessHandlers() {
-    process.on('SIGTERM', () => this.gracefulShutdown('SIGTERM', 0));
-    process.on('SIGINT',  () => this.gracefulShutdown('SIGINT', 0));
-    process.on('unhandledRejection', (reason) => {
+    process.on("SIGTERM", () => this.gracefulShutdown("SIGTERM", 0));
+    process.on("SIGINT", () => this.gracefulShutdown("SIGINT", 0));
+    process.on("unhandledRejection", (reason) => {
       if (reason && reason.isOperational) {
-        console.error('unhandledRejection (operational):', reason);
+        console.error("unhandledRejection (operational):", reason);
       } else {
-        console.error('unhandledRejection:', reason);
-        this.gracefulShutdown('unhandledRejection', 1);
+        console.error("unhandledRejection:", reason);
+        this.gracefulShutdown("unhandledRejection", 1);
       }
     });
-    process.on('uncaughtException', (err) => {
-      console.error('uncaughtException:', err);
-      this.gracefulShutdown('uncaughtException', 1);
+    process.on("uncaughtException", (err) => {
+      console.error("uncaughtException:", err);
+      this.gracefulShutdown("uncaughtException", 1);
     });
   }
 }
