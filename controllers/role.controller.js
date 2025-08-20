@@ -4,6 +4,7 @@ const { ApiError } = require("../middlewares/errorHandler");
 
 const { Role, RoleModule, Module, User, sequelize } = db;
 
+// Helpers
 const parseBool = (v, dflt) => {
   if (typeof v === "boolean") return v;
   if (v === 1 || v === "1") return true;
@@ -66,10 +67,8 @@ module.exports = {
       if (exists) throw new ApiError("El rol ya existe", 409);
 
       const created = await Role.create({ name, status }, { transaction: t });
-
       await t.commit();
 
-      // Relee (o construye) la salida con status boolean
       const obj = created.get({ plain: true });
       return res.status(201).json({ ...obj, status: !!obj.status });
     } catch (err) {
@@ -84,7 +83,7 @@ module.exports = {
     try {
       const id = parseId(req.params.id);
       const role = await Role.findByPk(id, {
-        attributes: ["idRole", "name", "status"], // 👈 incluye status
+        attributes: ["idRole", "name", "status"],
         transaction: t,
       });
       if (!role) throw new ApiError("Rol no encontrado", 404);
@@ -130,36 +129,36 @@ module.exports = {
   },
 
   // GET /api/roles/:id/modules
+  // Devuelve TODOS los módulos (para el modal) con:
+  // - status: activo global del módulo
+  // - selected: si está asignado al rol (existe fila en rolemodules)
   getModules: async (req, res, next) => {
     try {
       const id = parseId(req.params.id);
       const role = await Role.findByPk(id);
       if (!role) throw new ApiError("Rol no encontrado", 404);
 
+      // 1) todos los módulos (puedes filtrar por status:1 si quieres ocultar globalmente los apagados)
       const modules = await Module.findAll({
         attributes: ["idModule", "name", "route", "status"],
-        include: [
-          {
-            model: Role,
-            through: { attributes: [] },
-            where: { idRole: id },
-            required: false,
-            attributes: [],
-          },
-        ],
         order: [["idModule", "ASC"]],
       });
 
-      const result = modules.map((m) => {
-        const obj = m.get({ plain: true });
-        return {
-          idModule: obj.idModule,
-          name: obj.name,
-          route: obj.route,
-          status: !!obj.status, // 👈 boolean
-          selected: Array.isArray(m.Role) && m.Role.length > 0,
-        };
+      // 2) asignaciones del rol desde la pivote
+      const assigned = await RoleModule.findAll({
+        where: { idRole: id },
+        attributes: ["idModule"],
       });
+      const assignedSet = new Set(assigned.map((a) => a.idModule));
+
+      // 3) arma respuesta
+      const result = modules.map((m) => ({
+        idModule: m.idModule,
+        name: m.name,
+        route: m.route,
+        status: !!m.status,
+        selected: assignedSet.has(m.idModule),
+      }));
 
       return res.json(result);
     } catch (err) {
@@ -168,17 +167,17 @@ module.exports = {
   },
 
   // PUT /api/roles/:id/modules
+  // Guarda la lista de módulos asignados al rol (selected = true)
   setModules: async (req, res, next) => {
     const t = await sequelize.transaction();
     try {
       const id = parseId(req.params.id);
 
-      // Tolerante: acepta body como array directo o { modules: [] }
+      // Acepta [1,2,3] o { modules: [1,2,3] }
       let arr = Array.isArray(req.body) ? req.body : req.body?.modules;
       if (!Array.isArray(arr))
         throw new ApiError("El cuerpo debe incluir un array 'modules'", 400);
 
-      // Limpia duplicados y normaliza a enteros válidos
       const ids = [...new Set(arr.map(Number))].filter(
         (n) => Number.isInteger(n) && n > 0
       );
