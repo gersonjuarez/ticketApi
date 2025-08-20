@@ -74,10 +74,12 @@ module.exports = {
       /**
        * Nuevo: Suscripción global para TVs (no depende de prefix)
        */
-      socket.on("subscribe-tv", () => {
-        socket.join("tv");
-        console.log(`[socket] ${socket.id} suscrito al room global 'tv'`);
-      });
+   socket.on("subscribe-tv", () => {
+  socket.join("tv");
+  socket.emit("subscribed-tv", { ok: true, room: "tv" });
+  console.log(`[socket] ${socket.id} suscrito al room global 'tv'`);
+});
+
 
       /**
        * Evento de llamada de ticket.
