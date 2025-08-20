@@ -26,12 +26,12 @@ module.exports = {
   list: async (_req, res, next) => {
     try {
       const roles = await Role.findAll({
-        attributes: ["idRole", "name", "status"], 
+        attributes: ["idRole", "name", "status"],
         order: [["idRole", "ASC"]],
       });
       const out = roles.map((r) => {
         const obj = r.get({ plain: true });
-        return { ...obj, status: !!obj.status }; 
+        return { ...obj, status: !!obj.status };
       });
       return res.json(out);
     } catch (err) {
@@ -44,11 +44,11 @@ module.exports = {
     try {
       const id = parseId(req.params.id);
       const role = await Role.findByPk(id, {
-        attributes: ["idRole", "name", "status"], 
+        attributes: ["idRole", "name", "status"],
       });
       if (!role) throw new ApiError("Rol no encontrado", 404);
       const obj = role.get({ plain: true });
-      return res.json({ ...obj, status: !!obj.status }); 
+      return res.json({ ...obj, status: !!obj.status });
     } catch (err) {
       return next(err);
     }
@@ -99,7 +99,7 @@ module.exports = {
       await t.commit();
 
       const obj = role.get({ plain: true });
-      return res.json({ ...obj, status: !!obj.status }); 
+      return res.json({ ...obj, status: !!obj.status });
     } catch (err) {
       if (t.finished !== "commit") await t.rollback();
       return next(err);
@@ -115,7 +115,10 @@ module.exports = {
       const used = await User.count({ where: { idRole: id }, transaction: t });
       if (used > 0) throw new ApiError("Rol en uso por usuarios", 400);
 
-      const deleted = await Role.destroy({ where: { idRole: id }, transaction: t });
+      const deleted = await Role.destroy({
+        where: { idRole: id },
+        transaction: t,
+      });
       if (!deleted) throw new ApiError("Rol no encontrado", 404);
 
       await t.commit();
@@ -134,14 +137,15 @@ module.exports = {
       if (!role) throw new ApiError("Rol no encontrado", 404);
 
       const modules = await Module.findAll({
-        attributes: ["idModule", "name", "route", "status"], 
+        attributes: ["idModule", "name", "route", "status"],
         include: [
           {
             model: Role,
+            as: "roles", 
             through: { attributes: [] },
             where: { idRole: id },
             required: false,
-            attributes: [], // no necesitamos campos del rol incluido
+            attributes: [],
           },
         ],
         order: [["idModule", "ASC"]],
@@ -154,7 +158,7 @@ module.exports = {
           name: obj.name,
           route: obj.route,
           status: !!obj.status, // 👈 boolean
-          selected: Array.isArray(m.Roles) && m.Roles.length > 0,
+          selected: Array.isArray(m.roles) && m.roles.length > 0,
         };
       });
 
@@ -172,10 +176,13 @@ module.exports = {
 
       // Tolerante: acepta body como array directo o { modules: [] }
       let arr = Array.isArray(req.body) ? req.body : req.body?.modules;
-      if (!Array.isArray(arr)) throw new ApiError("El cuerpo debe incluir un array 'modules'", 400);
+      if (!Array.isArray(arr))
+        throw new ApiError("El cuerpo debe incluir un array 'modules'", 400);
 
       // Limpia duplicados y normaliza a enteros válidos
-      const ids = [...new Set(arr.map(Number))].filter((n) => Number.isInteger(n) && n > 0);
+      const ids = [...new Set(arr.map(Number))].filter(
+        (n) => Number.isInteger(n) && n > 0
+      );
 
       const role = await Role.findByPk(id, { transaction: t });
       if (!role) throw new ApiError("Rol no encontrado", 404);
