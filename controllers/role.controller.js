@@ -25,8 +25,15 @@ module.exports = {
   // GET /api/roles
   list: async (_req, res, next) => {
     try {
-      const roles = await Role.findAll({ order: [["idRole", "ASC"]] });
-      return res.json(roles);
+      const roles = await Role.findAll({
+        attributes: ["idRole", "name", "status"], 
+        order: [["idRole", "ASC"]],
+      });
+      const out = roles.map((r) => {
+        const obj = r.get({ plain: true });
+        return { ...obj, status: !!obj.status }; 
+      });
+      return res.json(out);
     } catch (err) {
       return next(err);
     }
@@ -36,9 +43,12 @@ module.exports = {
   get: async (req, res, next) => {
     try {
       const id = parseId(req.params.id);
-      const role = await Role.findByPk(id);
+      const role = await Role.findByPk(id, {
+        attributes: ["idRole", "name", "status"], 
+      });
       if (!role) throw new ApiError("Rol no encontrado", 404);
-      return res.json(role);
+      const obj = role.get({ plain: true });
+      return res.json({ ...obj, status: !!obj.status }); 
     } catch (err) {
       return next(err);
     }
@@ -56,8 +66,12 @@ module.exports = {
       if (exists) throw new ApiError("El rol ya existe", 409);
 
       const created = await Role.create({ name, status }, { transaction: t });
+
       await t.commit();
-      return res.status(201).json(created);
+
+      // Relee (o construye) la salida con status boolean
+      const obj = created.get({ plain: true });
+      return res.status(201).json({ ...obj, status: !!obj.status });
     } catch (err) {
       if (t.finished !== "commit") await t.rollback();
       return next(err);
@@ -69,7 +83,10 @@ module.exports = {
     const t = await sequelize.transaction();
     try {
       const id = parseId(req.params.id);
-      const role = await Role.findByPk(id, { transaction: t });
+      const role = await Role.findByPk(id, {
+        attributes: ["idRole", "name", "status"], // 👈 incluye status
+        transaction: t,
+      });
       if (!role) throw new ApiError("Rol no encontrado", 404);
 
       const name = req.body?.name;
@@ -80,7 +97,9 @@ module.exports = {
 
       await role.save({ transaction: t });
       await t.commit();
-      return res.json(role);
+
+      const obj = role.get({ plain: true });
+      return res.json({ ...obj, status: !!obj.status }); 
     } catch (err) {
       if (t.finished !== "commit") await t.rollback();
       return next(err);
@@ -115,24 +134,29 @@ module.exports = {
       if (!role) throw new ApiError("Rol no encontrado", 404);
 
       const modules = await Module.findAll({
+        attributes: ["idModule", "name", "route", "status"], 
         include: [
           {
             model: Role,
             through: { attributes: [] },
             where: { idRole: id },
             required: false,
+            attributes: [], // no necesitamos campos del rol incluido
           },
         ],
         order: [["idModule", "ASC"]],
       });
 
-      const result = modules.map((m) => ({
-        idModule: m.idModule,
-        name: m.name,
-        route: m.route,
-        status: m.status,
-        selected: Array.isArray(m.Roles) && m.Roles.length > 0,
-      }));
+      const result = modules.map((m) => {
+        const obj = m.get({ plain: true });
+        return {
+          idModule: obj.idModule,
+          name: obj.name,
+          route: obj.route,
+          status: !!obj.status, // 👈 boolean
+          selected: Array.isArray(m.Roles) && m.Roles.length > 0,
+        };
+      });
 
       return res.json(result);
     } catch (err) {
