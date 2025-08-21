@@ -1,13 +1,12 @@
 // controllers/ticketHistory.controller.js
 const { Op, literal } = require('sequelize');
 const db = require('../models');
-const { TicketHistory, TicketRegistration, User } = db;
+const { TicketHistory, TicketRegistration, User, Service } = db;
 
 const isDev = process.env.NODE_ENV !== 'production';
 
-// Mapa de columnas válidas para ordenar (usa tableName real)
+// columnas válidas para ordenar (cualificadas con el tableName real)
 const ORDER_MAP = {
-  timestamp: 'tickethistories.timestamp',
   createdAt: 'tickethistories.createdAt',
   idTicket: 'tickethistories.idTicket',
   fromStatus: 'tickethistories.fromStatus',
@@ -15,9 +14,6 @@ const ORDER_MAP = {
   changedByUser: 'tickethistories.changedByUser',
 };
 
-/**
- * GET /api/ticket-history
- */
 module.exports.list = async (req, res, next) => {
   try {
     // -------- Paginación
@@ -26,13 +22,13 @@ module.exports.list = async (req, res, next) => {
     const pageSize = Number.isInteger(pageSizeRaw) ? Math.min(Math.max(pageSizeRaw, 1), 1000) : 10;
     const offset = (page - 1) * pageSize;
 
-    // -------- Orden cualificado
-    const sortByReq = String(req.query.sortBy || '').trim();
-    const sortKey = ORDER_MAP[sortByReq] || ORDER_MAP.timestamp || ORDER_MAP.createdAt;
+    // -------- Orden (default createdAt DESC)
+    const sortByReq = String(req.query.sortBy || 'createdAt').trim();
+    const sortKey = ORDER_MAP[sortByReq] || ORDER_MAP.createdAt;
     const sortDir = String(req.query.sortDir).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     const order = [[literal(sortKey), sortDir]];
 
-    // -------- Filtros
+    // -------- Filtros raíz
     const where = {};
     if (req.query.userId) where.changedByUser = Number(req.query.userId);
     if (req.query.idTicket) where.idTicket = Number(req.query.idTicket);
@@ -52,7 +48,7 @@ module.exports.list = async (req, res, next) => {
       if (arr.length) where.toStatus = arr.length > 1 ? { [Op.in]: arr } : arr[0];
     }
 
-    // -------- Rango de fechas sobre 'timestamp'
+    // -------- Rango de fechas sobre createdAt (NO timestamp)
     const parseDateSafe = (d) => {
       if (!d) return null;
       const dt = new Date(d);
@@ -64,16 +60,24 @@ module.exports.list = async (req, res, next) => {
       const range = {};
       if (from) range[Op.gte] = from;
       if (to) { to.setHours(23, 59, 59, 999); range[Op.lte] = to; }
-      where.timestamp = range; // tu modelo sí tiene 'timestamp'
+      where.createdAt = range;
     }
 
-    // -------- Include (sin alias personalizados)
+    // -------- Include
+    // Nota: 'prefix' se obtiene desde Service, no desde TicketRegistration
     const include = [
       {
         model: TicketRegistration,
-        attributes: ['idTicketRegistration', 'turnNumber', 'idService', 'prefix', 'correlativo'],
+        attributes: ['idTicketRegistration', 'turnNumber', 'idService', 'correlativo'], // <-- sin 'prefix'
         required: false,
         where: {},
+        include: [
+          {
+            model: Service,
+            attributes: ['prefix'], // <-- aquí está 'prefix'
+            required: false,
+          },
+        ],
       },
       {
         model: User,
@@ -84,14 +88,14 @@ module.exports.list = async (req, res, next) => {
 
     if (req.query.serviceId) {
       include[0].where.idService = Number(req.query.serviceId);
-      include[0].required = true;
+      include[0].required = true; // INNER JOIN si filtras por servicio
     }
+
     if (req.query.q) {
       const q = String(req.query.q).trim();
       include[0].where = {
         ...(include[0].where || {}),
         [Op.or]: [
-          { prefix: { [Op.like]: `%${q}%` } },
           { correlativo: { [Op.like]: `%${q}%` } },
           Number.isInteger(Number(q)) ? { turnNumber: Number(q) } : null,
         ].filter(Boolean),
@@ -107,7 +111,7 @@ module.exports.list = async (req, res, next) => {
       limit: pageSize,
       distinct: true,
       subQuery: false,
-      // logging: console.log, // descomenta si quieres ver el SQL en consola
+      // logging: console.log,
     });
 
     res.json({
@@ -117,7 +121,7 @@ module.exports.list = async (req, res, next) => {
         pageSize,
         total: count,
         totalPages: Math.ceil(count / pageSize),
-        sortBy: sortByReq || (ORDER_MAP.timestamp ? 'timestamp' : 'createdAt'),
+        sortBy: 'createdAt',
         sortDir,
       },
       filters: { ...req.query },
