@@ -1,11 +1,11 @@
 // controllers/ticketHistory.controller.js
-const { Op, literal, col } = require('sequelize');
+const { Op, literal } = require('sequelize');
 const db = require('../models');
 const { TicketHistory, TicketRegistration, User } = db;
 
 const isDev = process.env.NODE_ENV !== 'production';
 
-// Mapa de columnas válidas para ordenar (cualificadas con el tableName real)
+// Mapa de columnas válidas para ordenar (usa tableName real)
 const ORDER_MAP = {
   timestamp: 'tickethistories.timestamp',
   createdAt: 'tickethistories.createdAt',
@@ -17,33 +17,20 @@ const ORDER_MAP = {
 
 /**
  * GET /api/ticket-history
- * Query:
- *  - page, pageSize (default 1, 10; máx 1000)
- *  - sortBy (timestamp|createdAt|idTicket|fromStatus|toStatus|changedByUser) default 'timestamp'
- *  - sortDir ('ASC'|'DESC', default 'DESC')
- *  - userId (changedByUser)
- *  - fromStatus (número o CSV "1,2,3")
- *  - toStatus   (número o CSV)
- *  - dateFrom (YYYY-MM-DD o ISO)
- *  - dateTo   (YYYY-MM-DD o ISO) // inclusivo a fin de día
- *  - idTicket (filtra por ticket específico)
- *  - serviceId (filtra por servicio del ticket)
- *  - q (busca en prefix/correlativo/turnNumber)
  */
 module.exports.list = async (req, res, next) => {
   try {
-    // -------- Paginación segura
+    // -------- Paginación
     const page = Number.parseInt(req.query.page, 10) > 0 ? Number.parseInt(req.query.page, 10) : 1;
     const pageSizeRaw = Number.parseInt(req.query.pageSize, 10);
     const pageSize = Number.isInteger(pageSizeRaw) ? Math.min(Math.max(pageSizeRaw, 1), 1000) : 10;
     const offset = (page - 1) * pageSize;
 
-    // -------- Orden cualificado (evita ambigüedad con includes)
+    // -------- Orden cualificado
     const sortByReq = String(req.query.sortBy || '').trim();
     const sortKey = ORDER_MAP[sortByReq] || ORDER_MAP.timestamp || ORDER_MAP.createdAt;
     const sortDir = String(req.query.sortDir).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
     const order = [[literal(sortKey), sortDir]];
-    // Alternativa sin literal: const order = [[col(sortKey), sortDir]];
 
     // -------- Filtros
     const where = {};
@@ -65,7 +52,7 @@ module.exports.list = async (req, res, next) => {
       if (arr.length) where.toStatus = arr.length > 1 ? { [Op.in]: arr } : arr[0];
     }
 
-    // -------- Rango de fechas sobre la columna 'timestamp' del modelo
+    // -------- Rango de fechas sobre 'timestamp'
     const parseDateSafe = (d) => {
       if (!d) return null;
       const dt = new Date(d);
@@ -76,14 +63,11 @@ module.exports.list = async (req, res, next) => {
     if (from || to) {
       const range = {};
       if (from) range[Op.gte] = from;
-      if (to) {
-        to.setHours(23, 59, 59, 999); // inclusivo fin de día
-        range[Op.lte] = to;
-      }
-      where.timestamp = range; // tu modelo SÍ tiene 'timestamp'
+      if (to) { to.setHours(23, 59, 59, 999); range[Op.lte] = to; }
+      where.timestamp = range; // tu modelo sí tiene 'timestamp'
     }
 
-    // -------- Include (ajusta 'required' según filtro)
+    // -------- Include (sin alias personalizados)
     const include = [
       {
         model: TicketRegistration,
@@ -100,9 +84,8 @@ module.exports.list = async (req, res, next) => {
 
     if (req.query.serviceId) {
       include[0].where.idService = Number(req.query.serviceId);
-      include[0].required = true; // si filtras por serviceId, suele ser INNER JOIN
+      include[0].required = true;
     }
-
     if (req.query.q) {
       const q = String(req.query.q).trim();
       include[0].where = {
@@ -122,8 +105,9 @@ module.exports.list = async (req, res, next) => {
       order,
       offset,
       limit: pageSize,
-      distinct: true,  // correcto con includes para que el count no se infle
-      subQuery: false, // evita COUNT anidado problemático en algunos joins
+      distinct: true,
+      subQuery: false,
+      // logging: console.log, // descomenta si quieres ver el SQL en consola
     });
 
     res.json({
@@ -139,7 +123,6 @@ module.exports.list = async (req, res, next) => {
       filters: { ...req.query },
     });
   } catch (err) {
-    // Log detallado en ambiente dev (no producir)
     if (isDev) {
       console.error('[TicketHistory:list] error:', {
         name: err?.name,
