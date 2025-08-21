@@ -589,15 +589,7 @@ exports.findAllLive = async (req, res) => {
   try {
     const { prefix, statuses } = req.query;
 
-    const where = { status: true }; // solo activos
-
-    // 1) filtra por correlativo LIKE PREFIX-%
-    if (prefix) {
-      const p = String(prefix).toUpperCase();
-      where.correlativo = { [Op.like]: `${p}-%` };
-    }
-
-    // 2) filtra por estado (default [1,2])
+    // 1) estados
     let ids = [1, 2];
     if (statuses) {
       ids = String(statuses)
@@ -606,13 +598,21 @@ exports.findAllLive = async (req, res) => {
         .filter((n) => Number.isFinite(n));
       if (ids.length === 0) ids = [1, 2];
     }
-    where.idTicketStatus = { [Op.in]: ids };
+
+    // 2) where base (todos los servicios, activos)
+    const where = { status: true, idTicketStatus: { [Op.in]: ids } };
+
+    // 3) filtro opcional por prefix (si lo mandas)
+    if (prefix) {
+      const p = String(prefix).toUpperCase();
+      where.correlativo = { [Op.like]: `${p}-%` };
+    }
 
     const rows = await TicketRegistration.findAll({
       where,
       include: [{ model: Client }, { model: Service }],
       order: [
-        ['turnNumber', 'ASC'], // muestra cola en orden
+        ['turnNumber', 'ASC'],
         ['createdAt', 'ASC'],
       ],
     });
