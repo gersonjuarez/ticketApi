@@ -3,20 +3,20 @@ const { Op } = require('sequelize');
 const bcrypt = require('bcryptjs');
 const { User, Role, Cashier, Service, sequelize } = require('../models');
 
-/** Determina si un idRole corresponde a un rol "Cajero" (por nombre) */
+/** ¿idRole es un rol "Cajero"? (por nombre) */
 const isCashierRole = async (idRole) => {
   if (!idRole) return false;
   const role = await Role.findByPk(idRole, { attributes: ['idRole', 'name'] });
   return !!role && /cajero/i.test(role.name || '');
 };
 
-/** Normaliza query string a entero con default */
+/** Normaliza a entero con default */
 const toInt = (v, def) => {
   const n = parseInt(v, 10);
   return Number.isFinite(n) ? n : def;
 };
 
-/** GET /users - listado con búsqueda/paginación/filtros (sin password) */
+/** GET /users (lista paginada, sin password) */
 exports.findAll = async (req, res) => {
   try {
     const {
@@ -40,13 +40,10 @@ exports.findAll = async (req, res) => {
       ];
     }
 
-    if (idRole) {
-      where.idRole = toInt(idRole, 0) || 0;
-    }
+    if (idRole) where.idRole = toInt(idRole, 0) || 0;
 
     if (typeof status !== 'undefined') {
-      if (String(status) === 'true') where.status = true;
-      else if (String(status) === 'false') where.status = false;
+      where.status = String(status) === 'true';
     }
 
     const limit = Math.max(1, toInt(pageSize, 20));
@@ -67,7 +64,7 @@ exports.findAll = async (req, res) => {
 
     const { rows, count } = await User.findAndCountAll({
       where,
-      attributes: { exclude: ['password'] }, // no exponer hash
+      attributes: { exclude: ['password'] },
       include: [
         { model: Role, attributes: ['idRole', 'name'] },
         { model: Cashier, attributes: ['idCashier', 'name'], required: false },
@@ -97,7 +94,7 @@ exports.findOne = async (req, res) => {
   try {
     const { id } = req.params;
     const user = await User.findByPk(id, {
-      attributes: { exclude: ['password'] }, // no exponer hash
+      attributes: { exclude: ['password'] },
       include: [
         { model: Role, attributes: ['idRole', 'name'] },
         { model: Cashier, attributes: ['idCashier', 'name'], required: false },
@@ -129,35 +126,46 @@ exports.create = async (req, res) => {
       });
     }
 
-    const existsUser = await User.findOne({ where: { username } });
-    if (existsUser) {
+    // Unicidad username/email
+    if (await User.findOne({ where: { username } })) {
       return res.status(409).json({ error: 'USERNAME_TAKEN', message: 'Usuario ya existe' });
     }
-    const existsEmail = await User.findOne({ where: { email } });
-    if (existsEmail) {
+    if (await User.findOne({ where: { email } })) {
       return res.status(409).json({ error: 'EMAIL_TAKEN', message: 'Email ya está en uso' });
     }
 
     const cashierRole = await isCashierRole(idRole);
 
     if (cashierRole) {
+      // 🔓 Permitir crear sin ventanilla
+      const hasCashierId =
+        idCashier !== undefined && idCashier !== null && Number(idCashier) !== 0;
 
-      const cashier = await Cashier.findByPk(idCashier);
-    
-
-      // ¿ya está ocupada?
-      const occupied = await User.findOne({
-        where: { idCashier: cashier.idCashier },
-        attributes: ['idUser', 'fullName', 'username'],
-      });
-      if (occupied) {
-        return res.status(409).json({
-          error: 'CASHIER_TAKEN',
-          message: `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
+      if (hasCashierId) {
+        const cashier = await Cashier.findByPk(idCashier);
+        if (!cashier) {
+          return res.status(404).json({
+            error: 'NOT_FOUND',
+            message: 'Ventanilla (idCashier) no encontrada.',
+          });
+        }
+        // ¿ya está ocupada?
+        const occupied = await User.findOne({
+          where: { idCashier: cashier.idCashier },
+          attributes: ['idUser', 'fullName', 'username'],
         });
+        if (occupied) {
+          return res.status(409).json({
+            error: 'CASHIER_TAKEN',
+            message: `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
+          });
+        }
+      } else {
+        // no se envió ventanilla -> guardar null
+        idCashier = null;
       }
     } else {
-      // si no es cajero, no debe llevar ventanilla
+      // si no es cajero, siempre null
       idCashier = null;
     }
 
@@ -200,65 +208,67 @@ exports.update = async (req, res) => {
       return res.status(404).json({ error: 'NOT_FOUND', message: 'Usuario no encontrado' });
     }
 
-    // Validar unicidad si cambian username/email
+    // Unicidad si cambian username/email
     if (username && username !== current.username) {
-      const existsUser = await User.findOne({ where: { username } });
-      if (existsUser) {
+      if (await User.findOne({ where: { username } })) {
         return res.status(409).json({ error: 'USERNAME_TAKEN', message: 'Usuario ya existe' });
       }
     }
     if (email && email !== current.email) {
-      const existsEmail = await User.findOne({ where: { email } });
-      if (existsEmail) {
+      if (await User.findOne({ where: { email } })) {
         return res.status(409).json({ error: 'EMAIL_TAKEN', message: 'Email ya está en uso' });
       }
     }
 
-    // ¿Sigue/será rol "Cajero"?
+    // ¿Rol final es Cajero?
     const cashierRole = await isCashierRole(idRole ?? current.idRole);
 
-    if (cashierRole) {
-      if (!idCashier) {
-        return res.status(400).json({
-          error: 'VALIDATION_ERROR',
-          message: 'idCashier es requerido para usuarios con rol Cajero.',
-        });
-      }
-      const cashier = await Cashier.findByPk(idCashier);
-      if (!cashier) {
-        return res.status(404).json({
-          error: 'NOT_FOUND',
-          message: 'Ventanilla (idCashier) no encontrada.',
-        });
-      }
+    // Política:
+    // - Si es Cajero y NO envían idCashier -> no lo exigimos (conserva el actual).
+    // - Si envían null/0 -> lo quitamos.
+    // - Si envían número -> validamos existencia y ocupación.
+    let nextIdCashier = current.idCashier;
 
-      // ¿Ventanilla ocupada por otro usuario?
-      const occupied = await User.findOne({
-        where: {
-          idCashier: cashier.idCashier,
-          idUser: { [Op.ne]: current.idUser },
-        },
-        attributes: ['idUser', 'fullName', 'username'],
-      });
-      if (occupied) {
-        return res.status(409).json({
-          error: 'CASHIER_TAKEN',
-          message: `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
+    if (cashierRole) {
+      if (idCashier === null || Number(idCashier) === 0) {
+        nextIdCashier = null;
+      } else if (typeof idCashier !== 'undefined') {
+        const cashier = await Cashier.findByPk(idCashier);
+        if (!cashier) {
+          return res.status(404).json({
+            error: 'NOT_FOUND',
+            message: 'Ventanilla (idCashier) no encontrada.',
+          });
+        }
+        const occupied = await User.findOne({
+          where: {
+            idCashier: cashier.idCashier,
+            idUser: { [Op.ne]: current.idUser },
+          },
+          attributes: ['idUser', 'fullName', 'username'],
         });
+        if (occupied) {
+          return res.status(409).json({
+            error: 'CASHIER_TAKEN',
+            message: `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
+          });
+        }
+        nextIdCashier = cashier.idCashier;
       }
+      // si no viene idCashier, dejamos el actual (posiblemente null)
     } else {
-      // si ya no es cajero, forzar null
-      idCashier = null;
+      // si cambia a NO cajero, siempre null
+      nextIdCashier = null;
     }
 
-    // Construir patch; password opcional
+    // Password opcional
     const patch = {
       fullName: fullName ?? current.fullName,
       username: username ?? current.username,
       email: email ?? current.email,
       idRole: idRole ?? current.idRole,
       status: typeof status === 'boolean' ? status : current.status,
-      idCashier,
+      idCashier: nextIdCashier,
     };
 
     if (typeof password === 'string' && password.trim().length > 0) {
@@ -275,7 +285,7 @@ exports.update = async (req, res) => {
     await current.update(patch);
 
     const updated = await User.findByPk(id, {
-      attributes: { exclude: ['password'] }, // no exponer hash
+      attributes: { exclude: ['password'] },
       include: [
         { model: Role, attributes: ['idRole', 'name'] },
         { model: Cashier, attributes: ['idCashier', 'name'], required: false },
@@ -294,7 +304,7 @@ exports.update = async (req, res) => {
   }
 };
 
-/** PATCH /users/:id/assign-cashier */
+/** PATCH /users/:id/assign-cashier (para el modal diario) */
 exports.assignCashier = async (req, res) => {
   const { id } = req.params; // id del usuario
   const { idCashier, idService } = req.body;
@@ -319,7 +329,7 @@ exports.assignCashier = async (req, res) => {
       return res.status(400).json({ error: 'USER_INACTIVE', message: 'Usuario inactivo' });
     }
 
-    // 2) Ventanilla + su servicio
+    // 2) Ventanilla + servicio
     const cashier = await Cashier.findByPk(idCashier, {
       include: [{ model: Service, attributes: ['idService', 'name', 'prefix'] }],
       transaction: t,
@@ -340,7 +350,7 @@ exports.assignCashier = async (req, res) => {
       });
     }
 
-    // 3) ¿ocupada por otro usuario?
+    // 3) ¿ocupada?
     const occupied = await User.findOne({
       where: { idCashier: cashier.idCashier, idUser: { [Op.ne]: user.idUser } },
       transaction: t,
@@ -354,7 +364,7 @@ exports.assignCashier = async (req, res) => {
       });
     }
 
-    // 4) Actualiza asignación
+    // 4) Asignar
     await user.update({ idCashier: cashier.idCashier }, { transaction: t });
 
     await t.commit();
@@ -408,7 +418,7 @@ exports.remove = async (req, res) => {
   }
 };
 
-/** GET /roles - listado simple de roles (para selects en UI) */
+/** GET /roles (para selects) */
 exports.roles = async (req, res) => {
   try {
     const roles = await Role.findAll({
