@@ -4,6 +4,7 @@ const { ApiError } = require("../middlewares/errorHandler");
 
 const { Role, RoleModule, Module, User, sequelize } = db;
 
+// Helpers
 const parseBool = (v, dflt) => {
   if (typeof v === "boolean") return v;
   if (v === 1 || v === "1") return true;
@@ -25,8 +26,15 @@ module.exports = {
   // GET /api/roles
   list: async (_req, res, next) => {
     try {
-      const roles = await Role.findAll({ order: [["idRole", "ASC"]] });
-      return res.json(roles);
+      const roles = await Role.findAll({
+        attributes: ["idRole", "name", "status"],
+        order: [["idRole", "ASC"]],
+      });
+      const out = roles.map((r) => {
+        const obj = r.get({ plain: true });
+        return { ...obj, status: !!obj.status };
+      });
+      return res.json(out);
     } catch (err) {
       return next(err);
     }
@@ -36,9 +44,12 @@ module.exports = {
   get: async (req, res, next) => {
     try {
       const id = parseId(req.params.id);
-      const role = await Role.findByPk(id);
+      const role = await Role.findByPk(id, {
+        attributes: ["idRole", "name", "status"],
+      });
       if (!role) throw new ApiError("Rol no encontrado", 404);
-      return res.json(role);
+      const obj = role.get({ plain: true });
+      return res.json({ ...obj, status: !!obj.status });
     } catch (err) {
       return next(err);
     }
@@ -57,7 +68,9 @@ module.exports = {
 
       const created = await Role.create({ name, status }, { transaction: t });
       await t.commit();
-      return res.status(201).json(created);
+
+      const obj = created.get({ plain: true });
+      return res.status(201).json({ ...obj, status: !!obj.status });
     } catch (err) {
       if (t.finished !== "commit") await t.rollback();
       return next(err);
@@ -69,7 +82,10 @@ module.exports = {
     const t = await sequelize.transaction();
     try {
       const id = parseId(req.params.id);
-      const role = await Role.findByPk(id, { transaction: t });
+      const role = await Role.findByPk(id, {
+        attributes: ["idRole", "name", "status"],
+        transaction: t,
+      });
       if (!role) throw new ApiError("Rol no encontrado", 404);
 
       const name = req.body?.name;
@@ -80,7 +96,9 @@ module.exports = {
 
       await role.save({ transaction: t });
       await t.commit();
-      return res.json(role);
+
+      const obj = role.get({ plain: true });
+      return res.json({ ...obj, status: !!obj.status });
     } catch (err) {
       if (t.finished !== "commit") await t.rollback();
       return next(err);
@@ -96,7 +114,10 @@ module.exports = {
       const used = await User.count({ where: { idRole: id }, transaction: t });
       if (used > 0) throw new ApiError("Rol en uso por usuarios", 400);
 
-      const deleted = await Role.destroy({ where: { idRole: id }, transaction: t });
+      const deleted = await Role.destroy({
+        where: { idRole: id },
+        transaction: t,
+      });
       if (!deleted) throw new ApiError("Rol no encontrado", 404);
 
       await t.commit();
@@ -108,30 +129,35 @@ module.exports = {
   },
 
   // GET /api/roles/:id/modules
+  // Devuelve TODOS los módulos (para el modal) con:
+  // - status: activo global del módulo
+  // - selected: si está asignado al rol (existe fila en rolemodules)
   getModules: async (req, res, next) => {
     try {
       const id = parseId(req.params.id);
       const role = await Role.findByPk(id);
       if (!role) throw new ApiError("Rol no encontrado", 404);
 
+      // 1) todos los módulos (puedes filtrar por status:1 si quieres ocultar globalmente los apagados)
       const modules = await Module.findAll({
-        include: [
-          {
-            model: Role,
-            through: { attributes: [] },
-            where: { idRole: id },
-            required: false,
-          },
-        ],
+        attributes: ["idModule", "name", "route", "status"],
         order: [["idModule", "ASC"]],
       });
 
+      // 2) asignaciones del rol desde la pivote
+      const assigned = await RoleModule.findAll({
+        where: { idRole: id },
+        attributes: ["idModule"],
+      });
+      const assignedSet = new Set(assigned.map((a) => a.idModule));
+
+      // 3) arma respuesta
       const result = modules.map((m) => ({
         idModule: m.idModule,
         name: m.name,
         route: m.route,
-        status: m.status,
-        selected: Array.isArray(m.Roles) && m.Roles.length > 0,
+        status: !!m.status,
+        selected: assignedSet.has(m.idModule),
       }));
 
       return res.json(result);
@@ -141,17 +167,20 @@ module.exports = {
   },
 
   // PUT /api/roles/:id/modules
+  // Guarda la lista de módulos asignados al rol (selected = true)
   setModules: async (req, res, next) => {
     const t = await sequelize.transaction();
     try {
       const id = parseId(req.params.id);
 
-      // Tolerante: acepta body como array directo o { modules: [] }
+      // Acepta [1,2,3] o { modules: [1,2,3] }
       let arr = Array.isArray(req.body) ? req.body : req.body?.modules;
-      if (!Array.isArray(arr)) throw new ApiError("El cuerpo debe incluir un array 'modules'", 400);
+      if (!Array.isArray(arr))
+        throw new ApiError("El cuerpo debe incluir un array 'modules'", 400);
 
-      // Limpia duplicados y normaliza a enteros válidos
-      const ids = [...new Set(arr.map(Number))].filter((n) => Number.isInteger(n) && n > 0);
+      const ids = [...new Set(arr.map(Number))].filter(
+        (n) => Number.isInteger(n) && n > 0
+      );
 
       const role = await Role.findByPk(id, { transaction: t });
       if (!role) throw new ApiError("Rol no encontrado", 404);
