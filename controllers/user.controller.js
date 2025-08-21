@@ -141,12 +141,7 @@ exports.create = async (req, res) => {
     const cashierRole = await isCashierRole(idRole);
 
     if (cashierRole) {
-      if (!idCashier) {
-        return res.status(400).json({
-          error: 'VALIDATION_ERROR',
-          message: 'idCashier es requerido para usuarios con rol Cajero.',
-        });
-      }
+
       const cashier = await Cashier.findByPk(idCashier);
       if (!cashier) {
         return res.status(404).json({
