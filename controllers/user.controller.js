@@ -211,8 +211,17 @@ exports.update = async (req, res) => {
       }
       const rounds = parseInt(process.env.BCRYPT_ROUNDS || '10', 10);
       newPasswordHash = await bcrypt.hash(password, rounds);
-    }
-
+    }    // Detectar si cambió la ventanilla para cerrar sesión del usuario
+    // Normalizar valores para comparación correcta
+    const currentCashierId = current.idCashier === null ? null : Number(current.idCashier);
+    const newCashierId = idCashier === null ? null : Number(idCashier);
+    const cashierChanged = currentCashierId !== newCashierId;
+    
+    console.log(`[user.controller] DEBUG - Usuario ${current.idUser}:`);
+    console.log(`  - Ventanilla anterior: ${current.idCashier} (tipo: ${typeof current.idCashier}, normalizado: ${currentCashierId})`);
+    console.log(`  - Ventanilla nueva: ${idCashier} (tipo: ${typeof idCashier}, normalizado: ${newCashierId})`);
+    console.log(`  - ¿Cambió?: ${cashierChanged}`);
+    
     await User.update(
       {
         fullName: fullName ?? current.fullName,
@@ -225,6 +234,21 @@ exports.update = async (req, res) => {
       },
       { where: { idUser: id } }
     );
+
+    // Si cambió la ventanilla, cerrar sesión del usuario via socket
+    if (cashierChanged) {
+      try {
+        console.log(`[user.controller] Intentando cerrar sesión del usuario ${current.idUser} por cambio de ventanilla...`);
+        const socketModule = require('../server/socket');
+        const loggedOutSessions = socketModule.forceLogoutUser(current.idUser, 'Cambio de ventanilla asignada');
+        console.log(`[user.controller] Usuario ${current.idUser} (${current.username}) - Ventanilla cambiada de ${current.idCashier} a ${idCashier}. Sesiones cerradas: ${loggedOutSessions}`);
+      } catch (socketError) {
+        console.error('[user.controller] Error al cerrar sesión via socket:', socketError);
+        // No interrumpir la actualización del usuario por un error de socket
+      }
+    } else {
+      console.log(`[user.controller] No se detectó cambio de ventanilla para usuario ${current.idUser}`);
+    }
 
     const updated = await User.findByPk(id, {
       attributes: { exclude: ['password'] }, // <-- no exponer hash

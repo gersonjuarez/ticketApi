@@ -14,10 +14,20 @@ module.exports = {
       pingTimeout: 30000,
       pingInterval: 25000,
       ...opts,
-    });
-
-    io.on('connection', (socket) => {
+    });    io.on('connection', (socket) => {
       console.log('[socket] Cliente conectado:', socket.id);
+
+      // Registro de usuario general (no necesariamente cajero)
+      socket.on('register-user', ({ idUser, username, fullName }) => {
+        if (!idUser) {
+          console.warn(`[socket] register-user inválido desde ${socket.id}:`, { idUser, username, fullName });
+          return;
+        }
+        
+        socket.userInfo = { idUser, username, fullName };
+        socket.join(`user-${idUser}`); // Join a una room específica del usuario
+        console.log(`[socket] Usuario ${idUser} (${username}) registrado en socket ${socket.id} y room 'user-${idUser}'`);
+      });
 
       // Registro del cajero en un servicio
       socket.on('register-cashier', ({ idCashier, prefix, idUser }) => {
@@ -483,6 +493,110 @@ module.exports = {
       console.log(`[socket:broadcastNextPendingToOthers] Broadcast del siguiente ticket ${next.correlativo} a ${broadcastCount} cajeros disponibles (excluyendo dispatch:${excludeCashierId}, ocupados:${busy.size})`);
     } catch (e) {
       console.error('[socket:broadcastNextPendingToOthers] error:', e?.message || e);
+    }
+  },  // Nueva función para cerrar sesión de un usuario cuando se cambia su ventanilla
+  forceLogoutUser: (idUser, reason = 'Cambio de ventanilla') => {
+    try {
+      console.log(`[socket:forceLogoutUser] Iniciando cierre de sesión para usuario ${idUser}, razón: ${reason}`);
+      
+      if (!io) {
+        console.warn('[socket:forceLogoutUser] Socket.IO no inicializado');
+        return 0;
+      }
+
+      let loggedOutSockets = 0;
+      
+      // Método 1: Buscar en servicios activos (cajeros registrados)
+      console.log(`[socket:forceLogoutUser] Método 1: Buscando usuario ${idUser} en ${serviceQueues.size} servicios activos`);
+      for (const [serviceName, serviceInfo] of serviceQueues) {
+        console.log(`[socket:forceLogoutUser] Revisando servicio '${serviceName}' con ${serviceInfo.cashiers.size} cajeros`);
+        for (const [socketId, cashierInfo] of serviceInfo.cashiers) {
+          console.log(`[socket:forceLogoutUser] Socket ${socketId}: usuario=${cashierInfo.idUser}, cajero=${cashierInfo.idCashier}`);
+          if (cashierInfo.idUser === idUser) {
+            const socket = io.sockets.sockets.get(socketId);
+            if (socket) {
+              console.log(`[socket:forceLogoutUser] ¡ENCONTRADO EN SERVICIOS! Cerrando sesión del usuario ${idUser} (cajero: ${cashierInfo.idCashier}) en servicio ${serviceName}`);
+              
+              // Emitir evento para cerrar sesión
+              socket.emit('force-logout', {
+                reason,
+                message: 'Tu sesión ha sido cerrada porque se cambió tu ventanilla asignada.',
+                timestamp: Date.now()
+              });
+              
+              // Desconectar socket después de un breve delay para que llegue el mensaje
+              setTimeout(() => {
+                socket.disconnect(true);
+              }, 1000);
+              
+              loggedOutSockets++;
+            } else {
+              console.log(`[socket:forceLogoutUser] Usuario ${idUser} encontrado pero socket ${socketId} no existe`);
+            }
+          }
+        }
+      }      // Método 2: Buscar en TODOS los sockets conectados (para usuarios no registrados como cajeros)
+      if (loggedOutSockets === 0) {
+        console.log(`[socket:forceLogoutUser] Método 2: Buscando en todos los sockets conectados (${io.sockets.sockets.size} sockets)`);
+        for (const [socketId, socket] of io.sockets.sockets) {
+          // Verificar si el socket tiene información de usuario
+          if (socket.userInfo && socket.userInfo.idUser === idUser) {
+            console.log(`[socket:forceLogoutUser] ¡ENCONTRADO EN SOCKETS GENERALES! Usuario ${idUser} en socket ${socketId}`);
+            
+            // Emitir evento para cerrar sesión
+            socket.emit('force-logout', {
+              reason,
+              message: 'Tu sesión ha sido cerrada porque se cambió tu ventanilla asignada.',
+              timestamp: Date.now()
+            });
+            
+            // Desconectar socket después de un breve delay para que llegue el mensaje
+            setTimeout(() => {
+              socket.disconnect(true);
+            }, 1000);
+            
+            loggedOutSockets++;
+          }
+        }
+      }
+
+      // Método 3: Emitir a room específica del usuario (más eficiente)
+      if (loggedOutSockets === 0) {
+        console.log(`[socket:forceLogoutUser] Método 3: Emitiendo a room 'user-${idUser}'`);
+        const userRoom = `user-${idUser}`;
+        const socketsInRoom = io.sockets.adapter.rooms.get(userRoom);
+        
+        if (socketsInRoom && socketsInRoom.size > 0) {
+          console.log(`[socket:forceLogoutUser] ¡ENCONTRADO EN ROOM! ${socketsInRoom.size} sockets en room '${userRoom}'`);
+          
+          // Emitir a todos los sockets en la room del usuario
+          io.to(userRoom).emit('force-logout', {
+            reason,
+            message: 'Tu sesión ha sido cerrada porque se cambió tu ventanilla asignada.',
+            timestamp: Date.now()
+          });
+          
+          loggedOutSockets = socketsInRoom.size;
+          
+          // Desconectar todos los sockets en la room después de un delay
+          setTimeout(() => {
+            for (const socketId of socketsInRoom) {
+              const socket = io.sockets.sockets.get(socketId);
+              if (socket) {
+                socket.disconnect(true);
+              }
+            }
+          }, 1000);
+        } else {
+          console.log(`[socket:forceLogoutUser] No hay sockets en room 'user-${idUser}'`);
+        }
+      }
+
+      console.log(`[socket:forceLogoutUser] RESULTADO: Sesiones cerradas para usuario ${idUser}: ${loggedOutSockets}`);
+      return loggedOutSockets;
+    } catch (e) {
+      console.error('[socket:forceLogoutUser] error:', e?.message || e);
+      return 0;
     }
   },
 };
