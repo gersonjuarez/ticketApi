@@ -1,43 +1,39 @@
 // controllers/ticketHistory.controller.js
-const { Op, literal } = require('sequelize');
+const { Op, col, where: whereFn, fn } = require('sequelize');
 const db = require('../models');
 const { TicketHistory, TicketRegistration, User, Service } = db;
 
 const isDev = process.env.NODE_ENV !== 'production';
 
-// columnas válidas para ordenar (cualificadas con el tableName real)
 const ORDER_MAP = {
-  createdAt: 'tickethistories.createdAt',
-  idTicket: 'tickethistories.idTicket',
-  fromStatus: 'tickethistories.fromStatus',
-  toStatus: 'tickethistories.toStatus',
-  changedByUser: 'tickethistories.changedByUser',
+  timestamp: col('TicketHistory.timestamp'),
+  idTicket: col('TicketHistory.idTicket'),
+  fromStatus: col('TicketHistory.fromStatus'),
+  toStatus: col('TicketHistory.toStatus'),
+  changedByUser: col('TicketHistory.changedByUser'),
 };
 
 module.exports.list = async (req, res, next) => {
   try {
-    // -------- Paginación
+    // Paginación
     const page = Number.parseInt(req.query.page, 10) > 0 ? Number.parseInt(req.query.page, 10) : 1;
     const pageSizeRaw = Number.parseInt(req.query.pageSize, 10);
     const pageSize = Number.isInteger(pageSizeRaw) ? Math.min(Math.max(pageSizeRaw, 1), 1000) : 10;
     const offset = (page - 1) * pageSize;
 
-    // -------- Orden (default createdAt DESC)
-    const sortByReq = String(req.query.sortBy || 'createdAt').trim();
-    const sortKey = ORDER_MAP[sortByReq] || ORDER_MAP.createdAt;
+    // Orden (por defecto timestamp DESC) usando alias del modelo
+    const sortByReq = String(req.query.sortBy || 'timestamp').trim();
+    const sortCol = ORDER_MAP[sortByReq] || ORDER_MAP.timestamp;
     const sortDir = String(req.query.sortDir).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-    const order = [[literal(sortKey), sortDir]];
+    const order = [[sortCol, sortDir]];
 
-    // -------- Filtros raíz
+    // Filtros raíz
     const where = {};
     if (req.query.userId) where.changedByUser = Number(req.query.userId);
     if (req.query.idTicket) where.idTicket = Number(req.query.idTicket);
 
     const csvToIntArray = (v) =>
-      String(v)
-        .split(',')
-        .map((s) => Number.parseInt(s.trim(), 10))
-        .filter(Number.isInteger);
+      String(v).split(',').map(s => Number.parseInt(s.trim(), 10)).filter(Number.isInteger);
 
     if (req.query.fromStatus) {
       const arr = csvToIntArray(req.query.fromStatus);
@@ -48,47 +44,44 @@ module.exports.list = async (req, res, next) => {
       if (arr.length) where.toStatus = arr.length > 1 ? { [Op.in]: arr } : arr[0];
     }
 
-    // -------- Rango de fechas sobre createdAt (NO timestamp)
-    const parseDateSafe = (d) => {
-      if (!d) return null;
-      const dt = new Date(d);
-      return isNaN(dt.getTime()) ? null : dt;
-    };
-    const from = parseDateSafe(req.query.dateFrom);
-    const to = parseDateSafe(req.query.dateTo);
-    if (from || to) {
-      const range = {};
-      if (from) range[Op.gte] = from;
-      if (to) { to.setHours(23, 59, 59, 999); range[Op.lte] = to; }
-      where.createdAt = range;
+    // ✅ Rango de fechas por DIA calendario (evita TZ)
+    const { dateFrom, dateTo } = req.query;
+    if (dateFrom || dateTo) {
+      const start = (dateFrom || '1970-01-01').trim();
+      const end   = (dateTo   || '2999-12-31').trim();
+
+      const dateOnly = fn('DATE', col('TicketHistory.timestamp'));
+      const dateFilter = whereFn(dateOnly, { [Op.between]: [start, end] });
+
+      if (!where[Op.and]) where[Op.and] = [];
+      where[Op.and].push(dateFilter);
     }
 
-    // -------- Include
-    // Nota: 'prefix' se obtiene desde Service, no desde TicketRegistration
+    // Include (User = idUser/fullName; prefix viene de Service)
     const include = [
       {
         model: TicketRegistration,
-        attributes: ['idTicketRegistration', 'turnNumber', 'idService', 'correlativo'], // <-- sin 'prefix'
+        attributes: ['idTicketRegistration', 'turnNumber', 'idService', 'correlativo'],
         required: false,
         where: {},
         include: [
           {
             model: Service,
-            attributes: ['prefix'], // <-- aquí está 'prefix'
+            attributes: ['idService', 'prefix'],
             required: false,
           },
         ],
       },
       {
         model: User,
-        attributes: ['id', 'name', 'email'],
+        attributes: ['idUser', 'username', 'fullName', 'email'],
         required: false,
       },
     ];
 
     if (req.query.serviceId) {
       include[0].where.idService = Number(req.query.serviceId);
-      include[0].required = true; // INNER JOIN si filtras por servicio
+      include[0].required = true;
     }
 
     if (req.query.q) {
@@ -117,12 +110,8 @@ module.exports.list = async (req, res, next) => {
     res.json({
       data: rows,
       pagination: {
-        page,
-        pageSize,
-        total: count,
-        totalPages: Math.ceil(count / pageSize),
-        sortBy: 'createdAt',
-        sortDir,
+        page, pageSize, total: count, totalPages: Math.ceil(count / pageSize),
+        sortBy: sortByReq, sortDir,
       },
       filters: { ...req.query },
     });
