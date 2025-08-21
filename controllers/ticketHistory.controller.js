@@ -7,80 +7,132 @@ const { TicketHistory, TicketRegistration, User } = db;
  * GET /api/ticket-history
  * Query:
  *  - page, pageSize (default 1, 10)
- *  - sortBy (default 'timestamp'), sortDir ('ASC'|'DESC', default 'DESC')
+ *  - sortBy (timestamp|idTicket|fromStatus|toStatus|changedByUser) default 'timestamp'
+ *  - sortDir ('ASC'|'DESC', default 'DESC')
  *  - userId (changedByUser)
- *  - fromStatus (1|2|3|4)  // Pendiente, Atendido, Cancelado, Finalizado (ajusta nombres a tu gusto)
- *  - toStatus   (opcional)
+ *  - fromStatus (número o CSV: 1,2,3,4)
+ *  - toStatus   (número o CSV)
  *  - dateFrom (ISO o yyyy-mm-dd)
  *  - dateTo   (ISO o yyyy-mm-dd)  // inclusivo fin de día
- *  - idTicket (opcional: filtra por ticket específico)
+ *  - idTicket (filtra por ticket específico)
+ *  - serviceId (filtra por servicio del ticket)
+ *  - q (búsqueda por prefix/correlativo/turnNumber)
  */
 module.exports.list = async (req, res, next) => {
   try {
-    const {
-      page = '1',
-      pageSize = '10',
-      sortBy = 'timestamp',
-      sortDir = 'DESC',
-      userId,
-      fromStatus,
-      toStatus,
-      dateFrom,
-      dateTo,
-      idTicket,
-    } = req.query;
+    // ---- Paginación segura
+    const page = Number.parseInt(req.query.page, 10) > 0 ? Number.parseInt(req.query.page, 10) : 1;
+    const pageSizeRaw = Number.parseInt(req.query.pageSize, 10);
+    const pageSize = Number.isInteger(pageSizeRaw) ? Math.min(Math.max(pageSizeRaw, 1), 100) : 10;
+    const offset = (page - 1) * pageSize;
 
-    // sanitizar básicos
-    const p = Math.max(1, parseInt(page, 10) || 1);
-    const ps = Math.min(100, Math.max(1, parseInt(pageSize, 10) || 10));
-    const order = [[sortBy, String(sortDir).toUpperCase() === 'ASC' ? 'ASC' : 'DESC']];
+    // ---- Ordenamiento con whitelist
+    const SORT_WHITELIST = new Set(['timestamp', 'idTicket', 'fromStatus', 'toStatus', 'changedByUser']);
+    const sortBy = SORT_WHITELIST.has(req.query.sortBy) ? req.query.sortBy : 'timestamp';
+    const sortDir = String(req.query.sortDir).toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+    const order = [[sortBy, sortDir]];
 
+    // ---- Filtros
     const where = {};
 
-    if (userId) where.changedByUser = Number(userId);
-    if (idTicket) where.idTicket = Number(idTicket);
-    if (fromStatus) where.fromStatus = Number(fromStatus);
-    if (toStatus) where.toStatus = Number(toStatus);
+    // userId / idTicket
+    if (req.query.userId) where.changedByUser = Number(req.query.userId);
+    if (req.query.idTicket) where.idTicket = Number(req.query.idTicket);
 
-    // rango de fechas (timestamp)
+    // fromStatus / toStatus: aceptan CSV
+    const csvToIntArray = (v) =>
+      String(v)
+        .split(',')
+        .map(s => Number.parseInt(s.trim(), 10))
+        .filter(n => Number.isInteger(n));
+
+    if (req.query.fromStatus) {
+      const arr = csvToIntArray(req.query.fromStatus);
+      if (arr.length > 0) where.fromStatus = arr.length > 1 ? { [Op.in]: arr } : arr[0];
+    }
+    if (req.query.toStatus) {
+      const arr = csvToIntArray(req.query.toStatus);
+      if (arr.length > 0) where.toStatus = arr.length > 1 ? { [Op.in]: arr } : arr[0];
+    }
+
+    // dateFrom / dateTo sobre 'timestamp'
+    const parseDateSafe = (d) => {
+      const dt = new Date(d);
+      return isNaN(dt.getTime()) ? null : dt;
+    };
+    const { dateFrom, dateTo } = req.query;
     if (dateFrom || dateTo) {
       const range = {};
-      if (dateFrom) range[Op.gte] = new Date(dateFrom);
-      if (dateTo) {
-        const to = new Date(dateTo);
-        // incluir el final del día
+      const from = parseDateSafe(dateFrom);
+      const to = parseDateSafe(dateTo);
+      if (from) range[Op.gte] = from;
+      if (to) {
+        // Incluir fin de día local
         to.setHours(23, 59, 59, 999);
         range[Op.lte] = to;
       }
-      where.timestamp = range;
+      if (Object.keys(range).length) where.timestamp = range;
+    }
+
+    // Filtros a nivel del TicketRegistration (serviceId y/o búsqueda simple)
+    const include = [
+      {
+        model: TicketRegistration,
+        attributes: ['idTicketRegistration', 'turnNumber', 'idService', 'prefix', 'correlativo'],
+        // No hace falta foreignKey aquí si la asociación está definida en los modelos
+        where: {},
+        required: false, // que no excluya si no hay registro (ajústalo a tu necesidad)
+      },
+      {
+        model: User,
+        attributes: ['id', 'name', 'email'],
+        required: false,
+      },
+    ];
+
+    if (req.query.serviceId) {
+      include[0].where.idService = Number(req.query.serviceId);
+    }
+
+    if (req.query.q) {
+      const q = String(req.query.q).trim();
+      // Búsqueda simple por prefix/correlativo/turnNumber
+      include[0].where[Op.or] = [
+        { prefix: { [Op.like]: `%${q}%` } },
+        { correlativo: { [Op.like]: `%${q}%` } },
+        // si turnNumber es numérico:
+        Number.isInteger(Number(q)) ? { turnNumber: Number(q) } : null,
+      ].filter(Boolean);
     }
 
     const { rows, count } = await TicketHistory.findAndCountAll({
       where,
-      include: [
-        {
-          model: TicketRegistration,
-          attributes: ['idTicketRegistration', 'turnNumber', 'idService', 'prefix', 'correlativo'],
-          foreignKey: 'idTicket',
-        },
-        {
-          model: User,
-          attributes: ['id', 'name', 'email'],
-          foreignKey: 'changedByUser',
-        },
-      ],
+      include,
       order,
-      offset: (p - 1) * ps,
-      limit: ps,
+      offset,
+      limit: pageSize,
+      distinct: true, // importante para que count sea correcto con LEFT JOINs
     });
 
     res.json({
       data: rows,
       pagination: {
-        page: p,
-        pageSize: ps,
+        page,
+        pageSize,
         total: count,
-        totalPages: Math.ceil(count / ps),
+        totalPages: Math.ceil(count / pageSize),
+        sortBy,
+        sortDir,
+      },
+      filters: {
+        userId: req.query.userId ?? null,
+        idTicket: req.query.idTicket ?? null,
+        fromStatus: req.query.fromStatus ?? null,
+        toStatus: req.query.toStatus ?? null,
+        dateFrom: dateFrom ?? null,
+        dateTo: dateTo ?? null,
+        serviceId: req.query.serviceId ?? null,
+        q: req.query.q ?? null,
       },
     });
   } catch (err) {
