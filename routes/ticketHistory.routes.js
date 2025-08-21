@@ -3,6 +3,6 @@ const router = require('express').Router();
 const controller = require('../controllers/ticketHistory.controller');
 
 // GET /api/ticket-history
-router.get('/', controller.list);
+router.get('/ticket-history', controller.list);
 
 module.exports = router;
