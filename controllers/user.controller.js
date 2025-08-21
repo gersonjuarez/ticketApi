@@ -142,13 +142,6 @@ exports.create = async (req, res) => {
 
     if (cashierRole) {
 
-      const cashier = await Cashier.findByPk(idCashier);
-      if (!cashier) {
-        return res.status(404).json({
-          error: 'NOT_FOUND',
-          message: 'Ventanilla (idCashier) no encontrada.',
-        });
-      }
 
       // ¿ya está ocupada?
       const occupied = await User.findOne({
