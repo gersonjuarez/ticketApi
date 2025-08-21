@@ -12,6 +12,7 @@ router.post('/ticket-registration', controller.create);
 router.put('/ticket-registration/:id', controller.update);
 router.delete('/ticket-registration/:id', controller.delete);
 router.get('/tickets/status', controller.getPendingTickets);
+router.get('/ticket-registration/live', controller.findAllLive);
 // POST /api/ticket-registration - crea un ticket y emite socket
 //router.post('/', controller.create);
 

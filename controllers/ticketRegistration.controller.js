@@ -585,3 +585,45 @@ exports.delete = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+exports.findAllLive = async (req, res) => {
+  try {
+    const { prefix, statuses } = req.query;
+
+    const where = { status: true }; // solo activos
+
+    // 1) filtra por correlativo LIKE PREFIX-%
+    if (prefix) {
+      const p = String(prefix).toUpperCase();
+      where.correlativo = { [Op.like]: `${p}-%` };
+    }
+
+    // 2) filtra por estado (default [1,2])
+    let ids = [1, 2];
+    if (statuses) {
+      ids = String(statuses)
+        .split(',')
+        .map((s) => parseInt(s, 10))
+        .filter((n) => Number.isFinite(n));
+      if (ids.length === 0) ids = [1, 2];
+    }
+    where.idTicketStatus = { [Op.in]: ids };
+
+    const rows = await TicketRegistration.findAll({
+      where,
+      include: [{ model: Client }, { model: Service }],
+      order: [
+        ['turnNumber', 'ASC'], // muestra cola en orden
+        ['createdAt', 'ASC'],
+      ],
+    });
+
+    const payload = rows.map((t) => toTicketPayload(t, t.Client, t.Service));
+    return res.json(payload);
+  } catch (err) {
+    console.error('findAllLive error:', err);
+    return res.status(500).json({
+      error: 'SERVER_ERROR',
+      message: 'No se pudieron obtener tickets',
+    });
+  }
+};
