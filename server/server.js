@@ -14,6 +14,7 @@ const userRoutes = require("../routes/user.routes.js");
 const rolesRoutes = require("../routes/roles.routes.js");
 const modulesRoutes = require("../routes/modules.routes.js");
 const authRoutesPer = require("../routes/auth.js");
+const historyRoutes = require("../routes/ticketHistory.routes.js");
 const { init, getIo } = require("./socket");
 const { notFound, errorHandler } = require("../middlewares/errorHandler");
 const authRequired = require("../middlewares/authRequired");
@@ -81,7 +82,8 @@ class Servidor {
     this.app.use(this.paths.route, modulesRoutes);
     this.app.use(this.paths.route, authRoutesPer);
     this.app.use("/api/tts", ttsRoutes);
-    // ✅ 404 y manejador de errores SIEMPRE al final
+    this.app.use(this.paths.route, historyRoutes);
+
     this.app.use(notFound);
     this.app.use(errorHandler);
   }
