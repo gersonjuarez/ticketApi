@@ -142,6 +142,8 @@ exports.create = async (req, res) => {
 
     if (cashierRole) {
 
+      const cashier = await Cashier.findByPk(idCashier);
+    
 
       // ¿ya está ocupada?
       const occupied = await User.findOne({
