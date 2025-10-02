@@ -11,7 +11,7 @@ module.exports = (sequelize, DataTypes) => {
 
       // Rol <-> Módulos (tabla de unión rolemodules)
       Role.belongsToMany(models.Module, {
-        through: models.RoleModule, // asumiendo que tienes el modelo RoleModule
+        through: models.RoleModule,
         foreignKey: "idRole",
         otherKey: "idModule",
       });
@@ -35,15 +35,21 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         defaultValue: true,
       },
+      // NUEVO: bandera para marcar si el rol es de Cajero
+      isCashier: {
+        type: DataTypes.BOOLEAN,
+        allowNull: false,
+        defaultValue: false,
+      },
       // createdAt / updatedAt los maneja Sequelize con timestamps:true
     },
     {
       sequelize,
       modelName: "Role",
-      tableName: "roles",     // <-- EXACTO como en MySQL
+      tableName: "roles",
       timestamps: true,
       underscored: false,
-      freezeTableName: true,  // evita pluralización automática
+      freezeTableName: true,
     }
   );
 

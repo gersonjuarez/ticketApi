@@ -2,26 +2,56 @@
 const { Op, fn, col, literal } = require('sequelize');
 const { TicketRegistration, Client, TicketStatus, sequelize } = require('../models');
 
-// ⚠️ IDs que representan "atendido/cerrado"
+// ⚠️ estados que cuentan como "atendido"
 const ATTENDED_STATUS_IDS = [2];
 
-// Campo de fecha a usar para los cálculos: 'updatedAt' o 'createdAt'
+// Campo base de fecha
 const DATE_FIELD = 'updatedAt';
 
-// Helpers de fecha (basado en TZ del servidor)
+// Ambiente
+const isDev = process.env.NODE_ENV !== 'production';
+
+// Helpers fecha
 function startOfDay(d = new Date()) { const x = new Date(d); x.setHours(0,0,0,0); return x; }
-function endOfDay(d = new Date()) { const x = new Date(d); x.setHours(23,59,59,999); return x; }
-function startOfMonth(d) { return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0); }
-function endOfMonth(d) { return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999); }
-function addMonths(d, delta) { return new Date(d.getFullYear(), d.getMonth() + delta, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()); }
+function endOfDay(d = new Date())   { const x = new Date(d); x.setHours(23,59,59,999); return x; }
+function startOfMonth(d)            { return new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0); }
+function endOfMonth(d)              { return new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999); }
+function addMonths(d, delta)        { return new Date(d.getFullYear(), d.getMonth() + delta, d.getDate(), d.getHours(), d.getMinutes(), d.getSeconds(), d.getMilliseconds()); }
 
 const fmtMonth = new Intl.DateTimeFormat('es-ES', { month: 'short', year: 'numeric' });
+
+// Helpers genéricos
+const parseIntClamp = (v, def, min, max) => {
+  const n = parseInt(v, 10);
+  if (!Number.isFinite(n)) return def;
+  return Math.min(Math.max(n, min), max);
+};
+const parseBool = (v, dflt = false) => {
+  if (typeof v === 'boolean') return v;
+  if (v === 1 || v === '1') return true;
+  if (v === 0 || v === '0') return false;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (['true','sí','si','yes'].includes(s)) return true;
+    if (['false','no'].includes(s)) return false;
+  }
+  return dflt;
+};
+const logErr = (scope, err) => {
+  if (!isDev) return;
+  console.error(`[dashboard:${scope}]`, {
+    name: err?.name,
+    message: err?.message,
+    sql: err?.sql || err?.parent?.sql,
+    sqlMessage: err?.parent?.sqlMessage || err?.original?.sqlMessage,
+    sqlState: err?.parent?.sqlState,
+    stack: err?.stack,
+  });
+};
 
 /**
  * GET /api/dashboard/tickets/attended-today
  * Respuesta: { count: number }
- * Cuenta tickets en estado “atendido” cuya fecha (DATE_FIELD) cayó HOY,
- * y que estén activos (status = true).
  */
 exports.getTicketsAttendedToday = async (req, res) => {
   try {
@@ -29,50 +59,52 @@ exports.getTicketsAttendedToday = async (req, res) => {
     const to = endOfDay();
 
     const where = {
-      status: true, // ✅ solo activos
+      status: true, // solo activos
       idTicketStatus: { [Op.in]: ATTENDED_STATUS_IDS },
       [DATE_FIELD]: { [Op.between]: [from, to] },
     };
 
-    const count = await TicketRegistration.count({ where });
+    const count = await TicketRegistration.count({ where /*, logging: console.log*/ });
     return res.json({ count });
   } catch (err) {
-    console.error('getTicketsAttendedToday error:', err);
+    logErr('attended-today', err);
     return res.status(500).json({ error: 'Error al obtener tickets atendidos hoy' });
   }
 };
 
 /**
- * GET /api/dashboard/tickets/by-month?months=12
+ * GET /api/dashboard/tickets/by-month?months=12&onlyAttended=false
  * Respuesta: [{ month: 'ago. 2025', count: 10 }, ...]
- * Agrupa por mes usando DATE_FORMAT(DATE_FIELD, '%Y-%m') (MySQL).
- * Incluye solo registros activos (status = true).
- * (Si deseas solo atendidos, descomenta el filtro de idTicketStatus)
+ * Agrupa por mes del DATE_FIELD e incluye solo status=true.
  */
 exports.getTicketsByMonth = async (req, res) => {
   try {
-    const months = Math.min(Math.max(parseInt(req.query.months || '12', 10), 1), 24);
+    const months = parseIntClamp(req.query.months ?? '12', 12, 1, 24);
+    const onlyAttended = parseBool(req.query.onlyAttended, false);
 
     const now = new Date();
     const firstMonthDate = startOfMonth(addMonths(now, -(months - 1)));
     const lastMonthDate = endOfMonth(now);
 
-    const ymExpr = fn('DATE_FORMAT', col(DATE_FIELD), '%Y-%m');
+    // DATE_FORMAT(field, '%Y-%m')
+    const ymExpr = fn('DATE_FORMAT', col(`TicketRegistration.${DATE_FIELD}`), '%Y-%m');
+
+    const where = {
+      status: true,
+      [DATE_FIELD]: { [Op.between]: [firstMonthDate, lastMonthDate] },
+      ...(onlyAttended ? { idTicketStatus: { [Op.in]: ATTENDED_STATUS_IDS } } : {}),
+    };
 
     const rows = await TicketRegistration.findAll({
       attributes: [
         [ymExpr, 'ym'],
         [fn('COUNT', literal('*')), 'count'],
       ],
-      where: {
-        status: true, // ✅ solo activos
-        // Descomenta si quieres SOLO atendidos en la dona/barras:
-        // idTicketStatus: { [Op.in]: ATTENDED_STATUS_IDS },
-        [DATE_FIELD]: { [Op.between]: [firstMonthDate, lastMonthDate] },
-      },
-      group: [literal('ym')], // si tu MySQL no acepta alias, usa: group: [ymExpr]
-      order: [literal('ym ASC')],
+      where,
+      group: [ymExpr],             // ✅ compatible con ONLY_FULL_GROUP_BY
+      order: [[ymExpr, 'ASC']],
       raw: true,
+      // logging: console.log,
     });
 
     const dbMap = new Map(rows.map(r => [r.ym, Number(r.count)]));
@@ -86,15 +118,15 @@ exports.getTicketsByMonth = async (req, res) => {
 
     return res.json(result);
   } catch (err) {
-    console.error('getTicketsByMonth error:', err);
+    logErr('by-month', err);
     return res.status(500).json({ error: 'Error al obtener tickets por mes' });
   }
 };
 
 /**
  * GET /api/dashboard/tickets/by-status
- * Respuesta: [{ idTicketStatus: 1, name: 'Pendiente', count: 12 }, ...]
- * Cuenta tickets activos (status = true) agrupados por estado.
+ * Respuesta: [{ idTicketStatus, name, count }]
+ * Cuenta tickets activos agrupados por estado.
  */
 exports.getTicketsByStatus = async (req, res) => {
   try {
@@ -104,20 +136,23 @@ exports.getTicketsByStatus = async (req, res) => {
         [fn('COUNT', literal('*')), 'count'],
         [col('TicketStatus.name'), 'name'],
       ],
-      where: { status: true }, // ✅ solo activos
+      where: { status: true },
       include: [
         {
           model: TicketStatus,
-          attributes: [], // solo usamos el nombre vía columna
+          attributes: [],
           required: false,
         },
       ],
-      group: ['idTicketStatus',],
-      order: [['idTicketStatus', 'ASC']],
+      group: [
+        col('TicketRegistration.idTicketStatus'),
+        col('TicketStatus.name'), // ✅ evita ONLY_FULL_GROUP_BY
+      ],
+      order: [[col('TicketRegistration.idTicketStatus'), 'ASC']],
       raw: true,
+      // logging: console.log,
     });
 
-    // Normalizamos tipos y nombres
     const result = rows.map(r => ({
       idTicketStatus: Number(r.idTicketStatus),
       name: r.name || String(r.idTicketStatus),
@@ -126,22 +161,22 @@ exports.getTicketsByStatus = async (req, res) => {
 
     return res.json(result);
   } catch (err) {
-    console.error('getTicketsByStatus error:', err);
+    logErr('by-status', err);
     return res.status(500).json({ error: 'Error al agrupar tickets por estado' });
   }
 };
 
 /**
- * GET /api/dashboard/clients/count
+ * GET /api/dashboard/tickets/client/count
  * Respuesta: { count: number }
  * Solo clientes activos (status = true).
  */
 exports.getClientsCount = async (req, res) => {
   try {
-    const count = await Client.count({ where: { status: true } }); // ✅ solo activos
+    const count = await Client.count({ where: { status: true } /*, logging: console.log*/ });
     return res.json({ count });
   } catch (err) {
-    console.error('getClientsCount error:', err);
+    logErr('clients-count', err);
     return res.status(500).json({ error: 'Error al obtener cantidad de clientes' });
   }
 };

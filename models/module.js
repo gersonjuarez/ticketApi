@@ -27,6 +27,10 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(100),
         allowNull: false,
       },
+      description: {
+        type: DataTypes.TEXT('long'),
+        allowNull: true,
+      },
       status: {
         type: DataTypes.BOOLEAN,
         allowNull: false,

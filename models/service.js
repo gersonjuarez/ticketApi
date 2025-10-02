@@ -28,20 +28,23 @@ module.exports = (sequelize, DataTypes) => {
         type: DataTypes.STRING(5),
         allowNull: false,
       },
+      description: {
+        type: DataTypes.TEXT('long'),
+        allowNull: true,
+      },
       status: {
         type: DataTypes.BOOLEAN,
         allowNull: false,
         defaultValue: true,
       },
-      // createdAt / updatedAt los maneja Sequelize con timestamps:true
     },
     {
       sequelize,
       modelName: "Service",
-      tableName: "services",   // <-- EXACTO como en MySQL
+      tableName: "services", 
       timestamps: true,
-      underscored: false,
-      freezeTableName: true,   // evita pluralización automática
+      freezeTableName: true,  
+     
     }
   );
 

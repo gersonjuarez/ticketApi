@@ -1,393 +1,429 @@
 // server/controllers/user.controller.js
-const { Op } = require('sequelize');
-const bcrypt = require('bcryptjs');
-const { User, Role, Cashier, Service, sequelize } = require('../models');
+const bcrypt = require("bcryptjs");
+const {
+  Op,
+  ValidationError,
+  UniqueConstraintError,
+  ForeignKeyConstraintError,
+  DatabaseError,
+} = require("sequelize");
+const { User, Role, Cashier, Service, sequelize } = require("../models");
+const { ApiError } = require("../middlewares/errorHandler");
 
-/** ¿idRole es un rol "Cajero"? (por nombre) */
+/* ===========================
+   Helpers
+   =========================== */
+const parseBool = (v, dflt) => {
+  if (typeof v === "boolean") return v;
+  if (v === 1 || v === "1") return true;
+  if (v === 0 || v === "0") return false;
+  if (typeof v === "string") {
+    const s = v.trim().toLowerCase();
+    if (["true", "sí", "si"].includes(s)) return true;
+    if (["false", "no"].includes(s)) return false;
+  }
+  return dflt;
+};
+
+const parseIntSafe = (v, dflt = null) => {
+  const n = Number(v);
+  return Number.isInteger(n) ? n : dflt;
+};
+
+const sanitizeStr = (v, max) => {
+  if (v == null) return null;
+  const s = String(v).trim();
+  if (!s) return null;
+  return s.slice(0, max);
+};
+
+const parsePage = (v) => {
+  const n = Number(v);
+  // 0-based (consistente con otros endpoints)
+  return Number.isInteger(n) && n >= 0 ? n : 0;
+};
+
+const parsePageSize = (v) => {
+  const n = Number(v);
+  return Number.isInteger(n) && n > 0 ? Math.min(n, 200) : 20;
+};
+
+const parseSort = (by, dir) => {
+  const allowed = new Set([
+    "createdAt",
+    "updatedAt",
+    "fullName",
+    "username",
+    "email",
+    "idRole",
+    "status",
+  ]);
+  const sortBy = allowed.has(String(by)) ? String(by) : "createdAt";
+  const sortDir = String(dir || "DESC").toUpperCase() === "ASC" ? "ASC" : "DESC";
+  return [sortBy, sortDir];
+};
+
+const toPublicUser = (u) => {
+  const plain = typeof u.get === "function" ? u.get({ plain: true }) : u;
+  delete plain.password;
+  return plain;
+};
+
 const isCashierRole = async (idRole) => {
   if (!idRole) return false;
-  const role = await Role.findByPk(idRole, { attributes: ['idRole', 'name'] });
-  return !!role && /cajero/i.test(role.name || '');
+  const role = await Role.findByPk(idRole, { attributes: ["idRole", "isCashier"] });
+  return !!role && role.isCashier === true;
 };
 
-/** Normaliza a entero con default */
-const toInt = (v, def) => {
-  const n = parseInt(v, 10);
-  return Number.isFinite(n) ? n : def;
+const mapSequelizeError = (err) => {
+  if (err instanceof UniqueConstraintError) {
+    return new ApiError("Registro duplicado (violación de unique)", 409, {
+      fields: err.fields,
+      errors: err.errors,
+    });
+  }
+  if (err instanceof ValidationError) {
+    return new ApiError("Error de validación de datos", 400, {
+      errors: err.errors?.map((e) => ({ path: e.path, message: e.message })),
+    });
+  }
+  if (err instanceof ForeignKeyConstraintError) {
+    return new ApiError("Violación de integridad referencial (FK)", 409, {
+      table: err.table,
+      fields: err.fields,
+    });
+  }
+  if (err instanceof DatabaseError) {
+    return new ApiError("Error de base de datos", 500, { message: err.message });
+  }
+  return err;
 };
 
-/** GET /users (lista paginada, sin password) */
-exports.findAll = async (req, res) => {
+/* ===========================
+   Handlers
+   =========================== */
+
+/** GET /users (paginado, sin password) */
+exports.findAll = async (req, res, next) => {
   try {
-    const {
-      q,
-      page = 1,
-      pageSize = 20,
-      idRole,
-      status,
-      orderBy = 'createdAt',
-      orderDir = 'DESC',
-    } = req.query;
+    const page = parsePage(req.query.page);
+    const pageSize = parsePageSize(req.query.pageSize);
+    const [orderBy, orderDir] = parseSort(req.query.orderBy, req.query.orderDir);
+    const q = (req.query.q || "").toString().trim();
 
     const where = {};
-
-    if (q && q.trim()) {
-      const term = `%${q.trim()}%`;
+    if (q) {
+      const term = `%${q}%`;
       where[Op.or] = [
         { fullName: { [Op.like]: term } },
         { username: { [Op.like]: term } },
         { email: { [Op.like]: term } },
       ];
     }
+    const idRole = parseIntSafe(req.query.idRole);
+    if (idRole !== null) where.idRole = idRole;
 
-    if (idRole) where.idRole = toInt(idRole, 0) || 0;
-
-    if (typeof status !== 'undefined') {
-      where.status = String(status) === 'true';
+    if (req.query.status !== undefined) {
+      const s = parseBool(req.query.status, null);
+      if (s !== null) where.status = s;
     }
-
-    const limit = Math.max(1, toInt(pageSize, 20));
-    const pageN = Math.max(1, toInt(page, 1));
-    const offset = (pageN - 1) * limit;
-
-    const validCols = new Set([
-      'createdAt',
-      'updatedAt',
-      'fullName',
-      'username',
-      'email',
-      'idRole',
-      'status',
-    ]);
-    const orderColumn = validCols.has(orderBy) ? orderBy : 'createdAt';
-    const orderDirection = /^(ASC|DESC)$/i.test(orderDir) ? orderDir.toUpperCase() : 'DESC';
 
     const { rows, count } = await User.findAndCountAll({
       where,
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: ["password"] },
       include: [
-        { model: Role, attributes: ['idRole', 'name'] },
-        { model: Cashier, attributes: ['idCashier', 'name'], required: false },
+        { model: Role, attributes: ["idRole", "name", "isCashier"] },
+        { model: Cashier, attributes: ["idCashier", "name"], required: false },
       ],
-      order: [[orderColumn, orderDirection]],
-      limit,
-      offset,
+      order: [[orderBy, orderDir]],
+      limit: pageSize,
+      offset: page * pageSize,
     });
 
-    res.json({
-      data: rows,
+    req.log?.info("Users list", { page, pageSize, q, orderBy, orderDir, total: count });
+
+    return res.json({
+      data: rows.map(toPublicUser),
       pagination: {
-        page: pageN,
-        pageSize: limit,
+        page,
+        pageSize,
         total: count,
-        totalPages: Math.ceil(count / limit),
+        totalPages: Math.ceil(count / pageSize),
+        sortBy: orderBy,
+        sortDir: orderDir,
       },
     });
   } catch (err) {
-    console.error('findAll users error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Error al obtener usuarios' });
+    req.log?.error("Users list error", { error: err.message });
+    return next(mapSequelizeError(err));
   }
 };
 
 /** GET /users/:id (sin password) */
-exports.findOne = async (req, res) => {
+exports.findOne = async (req, res, next) => {
   try {
-    const { id } = req.params;
+    const id = parseIntSafe(req.params.id);
+    if (id === null) throw new ApiError("Id inválido", 400);
+
     const user = await User.findByPk(id, {
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: ["password"] },
       include: [
-        { model: Role, attributes: ['idRole', 'name'] },
-        { model: Cashier, attributes: ['idCashier', 'name'], required: false },
+        { model: Role, attributes: ["idRole", "name", "isCashier"] },
+        { model: Cashier, attributes: ["idCashier", "name"], required: false },
       ],
     });
-    if (!user) return res.status(404).json({ error: 'NOT_FOUND', message: 'Usuario no encontrado' });
-    res.json(user);
+    if (!user) throw new ApiError("Usuario no encontrado", 404);
+
+    req.log?.info("Users get", { id });
+    return res.json(toPublicUser(user));
   } catch (err) {
-    console.error('findOne user error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Error al obtener usuario' });
+    req.log?.warn("Users get error", { id: req.params.id, error: err.message });
+    return next(mapSequelizeError(err));
   }
 };
 
 /** POST /users */
-exports.create = async (req, res) => {
+exports.create = async (req, res, next) => {
+  let t;
   try {
-    let { fullName, username, email, idRole, status, idCashier, password } = req.body;
-
-    if (!fullName || !username || !email || !idRole) {
-      return res.status(400).json({
-        error: 'VALIDATION_ERROR',
-        message: 'fullName, username, email e idRole son requeridos.',
-      });
-    }
-    if (!password || String(password).trim().length < 8) {
-      return res.status(400).json({
-        error: 'VALIDATION_ERROR',
-        message: 'password es requerido y debe tener al menos 8 caracteres.',
-      });
-    }
-
-    // Unicidad username/email
-    if (await User.findOne({ where: { username } })) {
-      return res.status(409).json({ error: 'USERNAME_TAKEN', message: 'Usuario ya existe' });
-    }
-    if (await User.findOne({ where: { email } })) {
-      return res.status(409).json({ error: 'EMAIL_TAKEN', message: 'Email ya está en uso' });
-    }
-
-    const cashierRole = await isCashierRole(idRole);
-
-    if (cashierRole) {
-      // 🔓 Permitir crear sin ventanilla
-      const hasCashierId =
-        idCashier !== undefined && idCashier !== null && Number(idCashier) !== 0;
-
-      if (hasCashierId) {
-        const cashier = await Cashier.findByPk(idCashier);
-        if (!cashier) {
-          return res.status(404).json({
-            error: 'NOT_FOUND',
-            message: 'Ventanilla (idCashier) no encontrada.',
-          });
-        }
-        // ¿ya está ocupada?
-        const occupied = await User.findOne({
-          where: { idCashier: cashier.idCashier },
-          attributes: ['idUser', 'fullName', 'username'],
-        });
-        if (occupied) {
-          return res.status(409).json({
-            error: 'CASHIER_TAKEN',
-            message: `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
-          });
-        }
-      } else {
-        // no se envió ventanilla -> guardar null
-        idCashier = null;
-      }
-    } else {
-      // si no es cajero, siempre null
-      idCashier = null;
-    }
-
-    const rounds = parseInt(process.env.BCRYPT_ROUNDS || '10', 10);
-    const hash = await bcrypt.hash(password, rounds);
-
-    const created = await User.create({
+    let {
       fullName,
       username,
       email,
       idRole,
-      status: !!status,
+      status,
       idCashier,
-      password: hash,
-    });
+      password,
+    } = req.body;
 
-    const plain = created.get({ plain: true });
-    delete plain.password;
+    fullName = sanitizeStr(fullName, 100);
+    username = sanitizeStr(username, 30);
+    email = sanitizeStr(email, 100);
+    idRole = parseIntSafe(idRole);
+    idCashier = idCashier === null ? null : parseIntSafe(idCashier);
 
-    return res.status(201).json(plain);
-  } catch (err) {
-    console.error('create user error:', err);
-    if (err?.name === 'SequelizeUniqueConstraintError') {
-      return res
-        .status(409)
-        .json({ error: 'CASHIER_TAKEN', message: 'La ventanilla ya está asignada a otro usuario' });
+    if (!fullName || !username || !email || idRole === null) {
+      throw new ApiError("fullName, username, email e idRole son requeridos.", 400);
     }
-    return res.status(500).json({ error: 'SERVER_ERROR', message: 'Error al crear usuario' });
+    if (!password || String(password).trim().length < 8) {
+      throw new ApiError("password es requerido y debe tener al menos 8 caracteres.", 400);
+    }
+
+    t = await sequelize.transaction();
+
+    // Check unicidad username/email
+    const existsUser = await User.findOne({ where: { username }, transaction: t });
+    if (existsUser) throw new ApiError("Usuario ya existe", 409);
+    const existsMail = await User.findOne({ where: { email }, transaction: t });
+    if (existsMail) throw new ApiError("Email ya está en uso", 409);
+
+    // Rol cajero y política de ventanilla
+    const cashierRole = await isCashierRole(idRole);
+    if (cashierRole) {
+      if (idCashier !== null && idCashier !== undefined && idCashier !== 0) {
+        const cashier = await Cashier.findByPk(idCashier, { transaction: t });
+        if (!cashier) throw new ApiError("Ventanilla (idCashier) no encontrada.", 404);
+        if (cashier.status === false) throw new ApiError("Ventanilla inactiva", 400);
+        const occupied = await User.findOne({
+          where: { idCashier: cashier.idCashier },
+          attributes: ["idUser", "fullName", "username"],
+          transaction: t,
+        });
+        if (occupied) throw new ApiError("La ventanilla ya está asignada a otro usuario", 409);
+      } else {
+        idCashier = null;
+      }
+    } else {
+      idCashier = null;
+    }
+
+    const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10", 10);
+    const hash = await bcrypt.hash(String(password).trim(), rounds);
+
+    const created = await User.create(
+      {
+        fullName,
+        username,
+        email,
+        idRole,
+        status: parseBool(status, true),
+        idCashier,
+        password: hash,
+      },
+      { transaction: t }
+    );
+
+    await t.commit();
+    req.log?.info("User created", { idUser: created.idUser, username });
+
+    return res.status(201).json(toPublicUser(created));
+  } catch (err) {
+    if (t && !t.finished) await t.rollback();
+    req.log?.error("User create error", { error: err.message });
+    return next(mapSequelizeError(err));
   }
 };
 
 /** PUT /users/:id */
-exports.update = async (req, res) => {
+exports.update = async (req, res, next) => {
+  let t;
   try {
-    const { id } = req.params;
+    const id = parseIntSafe(req.params.id);
+    if (id === null) throw new ApiError("Id inválido", 400);
+
     let { fullName, username, email, idRole, status, idCashier, password } = req.body;
 
-    const current = await User.findByPk(id);
-    if (!current) {
-      return res.status(404).json({ error: 'NOT_FOUND', message: 'Usuario no encontrado' });
-    }
+    fullName = fullName !== undefined ? sanitizeStr(fullName, 100) : undefined;
+    username = username !== undefined ? sanitizeStr(username, 30) : undefined;
+    email = email !== undefined ? sanitizeStr(email, 100) : undefined;
+    idRole = idRole !== undefined ? parseIntSafe(idRole) : undefined;
+    idCashier = idCashier === null ? null : idCashier !== undefined ? parseIntSafe(idCashier) : undefined;
 
-    // Unicidad si cambian username/email
+    t = await sequelize.transaction();
+
+    const current = await User.findByPk(id, { transaction: t });
+    if (!current) throw new ApiError("Usuario no encontrado", 404);
+
+    // unicidad cuando cambian username/email
     if (username && username !== current.username) {
-      if (await User.findOne({ where: { username } })) {
-        return res.status(409).json({ error: 'USERNAME_TAKEN', message: 'Usuario ya existe' });
-      }
+      const existsUser = await User.findOne({ where: { username }, transaction: t });
+      if (existsUser) throw new ApiError("Usuario ya existe", 409);
     }
     if (email && email !== current.email) {
-      if (await User.findOne({ where: { email } })) {
-        return res.status(409).json({ error: 'EMAIL_TAKEN', message: 'Email ya está en uso' });
-      }
+      const existsMail = await User.findOne({ where: { email }, transaction: t });
+      if (existsMail) throw new ApiError("Email ya está en uso", 409);
     }
 
-    // ¿Rol final es Cajero?
-    const cashierRole = await isCashierRole(idRole ?? current.idRole);
+    // ¿Rol final es cajero?
+    const finalRoleId = idRole !== undefined ? idRole : current.idRole;
+    const cashierRole = await isCashierRole(finalRoleId);
 
-    // Política:
-    // - Si es Cajero y NO envían idCashier -> no lo exigimos (conserva el actual).
-    // - Si envían null/0 -> lo quitamos.
-    // - Si envían número -> validamos existencia y ocupación.
-    let nextIdCashier = current.idCashier;
+    const prevIdCashier = current.idCashier === null ? null : Number(current.idCashier);
+    let nextIdCashier =
+      idCashier !== undefined ? idCashier : prevIdCashier;
 
     if (cashierRole) {
-      if (idCashier === null || Number(idCashier) === 0) {
+      if (idCashier === null || idCashier === 0) {
         nextIdCashier = null;
-      } else if (typeof idCashier !== 'undefined') {
-        const cashier = await Cashier.findByPk(idCashier);
-        if (!cashier) {
-          return res.status(404).json({
-            error: 'NOT_FOUND',
-            message: 'Ventanilla (idCashier) no encontrada.',
-          });
-        }
+      } else if (idCashier !== undefined) {
+        const cashier = await Cashier.findByPk(idCashier, { include: [{ model: Service }], transaction: t });
+        if (!cashier) throw new ApiError("Ventanilla (idCashier) no encontrada.", 404);
+        if (cashier.status === false) throw new ApiError("Ventanilla inactiva", 400);
         const occupied = await User.findOne({
-          where: {
-            idCashier: cashier.idCashier,
-            idUser: { [Op.ne]: current.idUser },
-          },
-          attributes: ['idUser', 'fullName', 'username'],
+          where: { idCashier: cashier.idCashier, idUser: { [Op.ne]: current.idUser } },
+          attributes: ["idUser"],
+          transaction: t,
         });
-        if (occupied) {
-          return res.status(409).json({
-            error: 'CASHIER_TAKEN',
-            message: `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
-          });
-        }
-        nextIdCashier = cashier.idCashier;
+        if (occupied) throw new ApiError("La ventanilla ya está asignada a otro usuario", 409);
       }
-      // si no viene idCashier, dejamos el actual (posiblemente null)
+      // si no se envía idCashier, conserva actual (puede ser null)
     } else {
-      // si cambia a NO cajero, siempre null
       nextIdCashier = null;
     }
 
-    // Password opcional
-    const patch = {
-      fullName: fullName ?? current.fullName,
-      username: username ?? current.username,
-      email: email ?? current.email,
-      idRole: idRole ?? current.idRole,
-      status: typeof status === 'boolean' ? status : current.status,
-      idCashier: nextIdCashier,
-    };
+    const patch = {};
+    if (fullName !== undefined) patch.fullName = fullName ?? current.fullName;
+    if (username !== undefined) patch.username = username ?? current.username;
+    if (email !== undefined) patch.email = email ?? current.email;
+    if (idRole !== undefined) patch.idRole = idRole ?? current.idRole;
+    if (status !== undefined) patch.status = parseBool(status, current.status);
+    patch.idCashier = nextIdCashier;
 
-    if (typeof password === 'string' && password.trim().length > 0) {
+    if (typeof password === "string" && password.trim().length > 0) {
       if (password.trim().length < 8) {
-        return res.status(400).json({
-          error: 'VALIDATION_ERROR',
-          message: 'La nueva contraseña debe tener al menos 8 caracteres.',
-        });
+        throw new ApiError("La nueva contraseña debe tener al menos 8 caracteres.", 400);
       }
-      const rounds = parseInt(process.env.BCRYPT_ROUNDS || '10', 10);
-      patch.password = await bcrypt.hash(password, rounds);
+      const rounds = parseInt(process.env.BCRYPT_ROUNDS || "10", 10);
+      patch.password = await bcrypt.hash(password.trim(), rounds);
     }
-const currentCashierId = current.idCashier === null ? null : Number(current.idCashier);
-    const newCashierId = idCashier === null ? null : Number(idCashier);
-    const cashierChanged = currentCashierId !== newCashierId;
-    
 
-    
-    await current.update(patch);
+    const cashierChanged = prevIdCashier !== patch.idCashier;
 
-    // Si cambió la ventanilla, cerrar sesión del usuario via socket
+    await current.update(patch, { transaction: t });
+
+    // Notificación por socket si cambió ventanilla (no rompe flujo si falla)
     if (cashierChanged) {
       try {
-        console.log(`[user.controller] Intentando cerrar sesión del usuario ${current.idUser} por cambio de ventanilla...`);
-        const socketModule = require('../server/socket');
-        const loggedOutSessions = socketModule.forceLogoutUser(current.idUser, 'Cambio de ventanilla asignada');
-        console.log(`[user.controller] Usuario ${current.idUser} (${current.username}) - Ventanilla cambiada de ${current.idCashier} a ${idCashier}. Sesiones cerradas: ${loggedOutSessions}`);
+        const socketModule = require("../server/socket");
+        const loggedOutSessions = socketModule.forceLogoutUser(
+          current.idUser,
+          "Cambio de ventanilla asignada"
+        );
+        req.log?.info("Forced logout due to cashier change", {
+          idUser: current.idUser,
+          from: prevIdCashier,
+          to: patch.idCashier,
+          sessionsClosed: loggedOutSessions,
+        });
       } catch (socketError) {
-        console.error('[user.controller] Error al cerrar sesión via socket:', socketError);
-        // No interrumpir la actualización del usuario por un error de socket
+        req.log?.warn("Socket logout error", { error: String(socketError?.message || socketError) });
       }
     } else {
-      console.log(`[user.controller] No se detectó cambio de ventanilla para usuario ${current.idUser}`);
+      req.log?.info("No cashier change for user", { idUser: current.idUser });
     }
 
     const updated = await User.findByPk(id, {
-      attributes: { exclude: ['password'] },
+      attributes: { exclude: ["password"] },
       include: [
-        { model: Role, attributes: ['idRole', 'name'] },
-        { model: Cashier, attributes: ['idCashier', 'name'], required: false },
+        { model: Role, attributes: ["idRole", "name", "isCashier"] },
+        { model: Cashier, attributes: ["idCashier", "name"], required: false },
       ],
+      transaction: t,
     });
 
-    return res.json(updated);
+    await t.commit();
+    req.log?.info("User updated", { idUser: id });
+    return res.json(toPublicUser(updated));
   } catch (err) {
-    console.error('update user error:', err);
-    if (err?.name === 'SequelizeUniqueConstraintError') {
-      return res
-        .status(409)
-        .json({ error: 'CASHIER_TAKEN', message: 'La ventanilla ya está asignada a otro usuario' });
-    }
-    return res.status(500).json({ error: 'SERVER_ERROR', message: 'Error al actualizar usuario' });
+    if (t && !t.finished) await t.rollback();
+    req.log?.error("User update error", { idUser: req.params.id, error: err.message });
+    return next(mapSequelizeError(err));
   }
 };
 
-/** PATCH /users/:id/assign-cashier (para el modal diario) */
-exports.assignCashier = async (req, res) => {
-  const { id } = req.params; // id del usuario
-  const { idCashier, idService } = req.body;
-
-  if (!idCashier || !idService) {
-    return res.status(400).json({
-      error: 'VALIDATION_ERROR',
-      message: 'idCashier e idService son requeridos',
-    });
-  }
-
+/** PATCH /users/:id/assign-cashier */
+exports.assignCashier = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
-    // 1) Usuario
-    const user = await User.findByPk(id, { transaction: t });
-    if (!user) {
-      await t.rollback();
-      return res.status(404).json({ error: 'NOT_FOUND', message: 'Usuario no encontrado' });
-    }
-    if (user.status === false) {
-      await t.rollback();
-      return res.status(400).json({ error: 'USER_INACTIVE', message: 'Usuario inactivo' });
+    const id = parseIntSafe(req.params.id);
+    const idCashier = parseIntSafe(req.body?.idCashier);
+    const idService = parseIntSafe(req.body?.idService);
+
+    if (id === null || idCashier === null || idService === null) {
+      throw new ApiError("idCashier e idService son requeridos", 400);
     }
 
-    // 2) Ventanilla + servicio
+    const user = await User.findByPk(id, { transaction: t });
+    if (!user) throw new ApiError("Usuario no encontrado", 404);
+    if (user.status === false) throw new ApiError("Usuario inactivo", 400);
+
     const cashier = await Cashier.findByPk(idCashier, {
-      include: [{ model: Service, attributes: ['idService', 'name', 'prefix'] }],
+      include: [{ model: Service, attributes: ["idService", "name", "prefix"] }],
       transaction: t,
     });
-    if (!cashier) {
-      await t.rollback();
-      return res.status(404).json({ error: 'NOT_FOUND', message: 'Ventanilla no encontrada' });
-    }
-    if (cashier.status === false) {
-      await t.rollback();
-      return res.status(400).json({ error: 'CASHIER_INACTIVE', message: 'Ventanilla inactiva' });
-    }
+    if (!cashier) throw new ApiError("Ventanilla no encontrada", 404);
+    if (cashier.status === false) throw new ApiError("Ventanilla inactiva", 400);
     if (Number(cashier.idService) !== Number(idService)) {
-      await t.rollback();
-      return res.status(400).json({
-        error: 'VALIDATION_ERROR',
-        message: 'La ventanilla no pertenece al servicio seleccionado',
-      });
+      throw new ApiError("La ventanilla no pertenece al servicio seleccionado", 400);
     }
 
-    // 3) ¿ocupada?
     const occupied = await User.findOne({
       where: { idCashier: cashier.idCashier, idUser: { [Op.ne]: user.idUser } },
       transaction: t,
-      attributes: ['idUser', 'fullName', 'username'],
+      attributes: ["idUser", "fullName", "username"],
     });
     if (occupied) {
-      await t.rollback();
-      return res.status(409).json({
-        error: 'CASHIER_TAKEN',
-        message: `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
-      });
+      throw new ApiError(
+        `La ventanilla ya está asignada a ${occupied.fullName || occupied.username}`,
+        409
+      );
     }
 
-    // 4) Asignar
     await user.update({ idCashier: cashier.idCashier }, { transaction: t });
 
     await t.commit();
+    req.log?.info("Cashier assigned to user", { idUser: user.idUser, idCashier: cashier.idCashier });
+
     return res.json({
       ok: true,
       user: {
@@ -399,10 +435,7 @@ exports.assignCashier = async (req, res) => {
         idCashier: user.idCashier,
         status: user.status,
       },
-      cashier: {
-        idCashier: cashier.idCashier,
-        name: cashier.name,
-      },
+      cashier: { idCashier: cashier.idCashier, name: cashier.name },
       service: cashier.Service
         ? {
             idService: cashier.Service.idService,
@@ -411,43 +444,39 @@ exports.assignCashier = async (req, res) => {
           }
         : null,
     });
-  } catch (error) {
-    if (t.finished !== 'commit') await t.rollback();
-    console.error('assignCashier error:', error);
-    if (error?.name === 'SequelizeUniqueConstraintError') {
-      return res
-        .status(409)
-        .json({ error: 'CASHIER_TAKEN', message: 'La ventanilla ya está asignada a otro usuario' });
-    }
-    return res.status(500).json({ error: 'SERVER_ERROR', message: 'No se pudo asignar la ventanilla' });
+  } catch (err) {
+    if (t && !t.finished) await t.rollback();
+    req.log?.error("Assign cashier error", { idUser: req.params.id, error: err.message });
+    return next(mapSequelizeError(err));
   }
 };
 
 /** DELETE /users/:id */
-exports.remove = async (req, res) => {
+exports.remove = async (req, res, next) => {
   try {
-    const { id } = req.params;
+    const id = parseIntSafe(req.params.id);
+    if (id === null) throw new ApiError("Id inválido", 400);
 
     const deleted = await User.destroy({ where: { idUser: id } });
-    if (!deleted) return res.status(404).json({ error: 'NOT_FOUND', message: 'Usuario no encontrado' });
+    if (!deleted) throw new ApiError("Usuario no encontrado", 404);
 
-    res.json({ deleted: true });
+    req.log?.info("User removed", { idUser: id });
+    return res.json({ deleted: true });
   } catch (err) {
-    console.error('remove user error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Error al eliminar usuario' });
+    req.log?.error("User remove error", { idUser: req.params.id, error: err.message });
+    return next(mapSequelizeError(err));
   }
 };
 
-/** GET /roles (para selects) */
-exports.roles = async (req, res) => {
+/** GET /roles (para selects rápidos) */
+exports.roles = async (_req, res, next) => {
   try {
     const roles = await Role.findAll({
-      attributes: ['idRole', 'name', 'status'],
-      order: [['name', 'ASC']],
+      attributes: ["idRole", "name", "status", "isCashier"],
+      order: [["name", "ASC"]],
     });
-    res.json(roles);
+    return res.json(roles);
   } catch (err) {
-    console.error('roles error:', err);
-    res.status(500).json({ error: 'SERVER_ERROR', message: 'Error al obtener roles' });
+    return next(mapSequelizeError(err));
   }
 };
