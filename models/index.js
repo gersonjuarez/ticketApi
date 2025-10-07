@@ -18,21 +18,22 @@ const makeOptions = (cfg) => {
     pool: cfg.pool ?? { max: 15, min: 0, acquire: 30000, idle: 10000 },
   };
 
-  // ⬇⬇ CLAVE: siempre trabajar en UTC desde Sequelize
-  opts.timezone = '+00:00'; // escribe en UTC (válido para MySQL)
+  // ✅ Escribir SIEMPRE en UTC desde Sequelize (aplica en MySQL)
+  opts.timezone = "+00:00";
 
-  // ⬇⬇ CLAVE: leer DATETIME como string (YYYY-MM-DD HH:mm:ss) sin cast local
+  // ✅ Forzar UTC en el driver + leer DATETIME/TIMESTAMP como string (o cámbialo a Date si prefieres)
   opts.dialectOptions = {
     ...(cfg.dialectOptions || {}),
+    timezone: "Z", // UTC
     dateStrings: true,
     typeCast: function (field, next) {
-      // MySQL DATETIME -> string plano
-      if (field.type === 'DATETIME') return field.string();
+      // Lee DATETIME/TIMESTAMP como string plano "YYYY-MM-DD HH:mm:ss"
+      if (field.type === "DATETIME" || field.type === "TIMESTAMP") return field.string();
       return next();
     },
   };
 
-  // SSL opcional por env (Aiven / managed DB)
+  // SSL opcional por env (Aiven / PlanetScale / etc.)
   if (process.env.MYSQL_SSL_CA) {
     opts.dialectOptions.ssl = opts.dialectOptions.ssl || {};
     opts.dialectOptions.ssl.ca = opts.dialectOptions.ssl.ca || process.env.MYSQL_SSL_CA;
@@ -58,7 +59,22 @@ if (process.env.DATABASE_URL) {
   }));
 }
 
-// Auto-carga recursiva de modelos
+/**
+ * ✅ Al iniciar, fijar time_zone de la SESIÓN MySQL en UTC.
+ * Esto asegura que funciones como NOW()/CURDATE() se evalúen en UTC.
+ * (Se ejecuta una sola vez; si falla, solo avisa por consola).
+ */
+(async () => {
+  try {
+    await sequelize.authenticate();
+    await sequelize.query("SET time_zone = '+00:00'");
+    console.log("[db] session time_zone set to +00:00 (UTC)");
+  } catch (e) {
+    console.warn("[db] could not SET time_zone:", e?.message || e);
+  }
+})();
+
+// Auto-carga recursiva de modelos (mantiene tu estructura)
 const files = [];
 const walk = (dir) => {
   const entries = fs.readdirSync(dir);
@@ -78,6 +94,7 @@ files.forEach((file) => {
   db[model.name] = model;
 });
 
+// Asociaciones
 Object.keys(db).forEach((name) => {
   if (db[name].associate) db[name].associate(db);
 });
