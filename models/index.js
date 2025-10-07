@@ -3,17 +3,14 @@ const fs = require("fs");
 const path = require("path");
 const { Sequelize, DataTypes } = require("sequelize");
 
-// Usa NODE_ENV para elegir bloque del config (development/test1/production)
 const env = process.env.NODE_ENV || "development";
-
-// Carga config.js en vez de config.json
 const configPath = path.join(__dirname, "..", "config", "config.js");
 const allConfigs = require(configPath);
 const baseConfig = allConfigs[env] || {};
 
 const db = {};
+const basename = path.basename(__filename);
 
-// Construye opciones finales de Sequelize
 const makeOptions = (cfg) => {
   const opts = {
     ...cfg,
@@ -21,12 +18,24 @@ const makeOptions = (cfg) => {
     pool: cfg.pool ?? { max: 15, min: 0, acquire: 30000, idle: 10000 },
   };
 
-  // Si viene CA por env y no está en config, añádelo (Aiven/SSL)
+  // ⬇⬇ CLAVE: siempre trabajar en UTC desde Sequelize
+  opts.timezone = '+00:00'; // escribe en UTC (válido para MySQL)
+
+  // ⬇⬇ CLAVE: leer DATETIME como string (YYYY-MM-DD HH:mm:ss) sin cast local
+  opts.dialectOptions = {
+    ...(cfg.dialectOptions || {}),
+    dateStrings: true,
+    typeCast: function (field, next) {
+      // MySQL DATETIME -> string plano
+      if (field.type === 'DATETIME') return field.string();
+      return next();
+    },
+  };
+
+  // SSL opcional por env (Aiven / managed DB)
   if (process.env.MYSQL_SSL_CA) {
-    opts.dialectOptions = opts.dialectOptions || {};
     opts.dialectOptions.ssl = opts.dialectOptions.ssl || {};
     opts.dialectOptions.ssl.ca = opts.dialectOptions.ssl.ca || process.env.MYSQL_SSL_CA;
-    // Recomendado en managed DB con certificados
     if (typeof opts.dialectOptions.ssl.rejectUnauthorized === "undefined") {
       opts.dialectOptions.ssl.rejectUnauthorized = true;
     }
@@ -36,35 +45,20 @@ const makeOptions = (cfg) => {
 };
 
 let sequelize;
-
-// Prioridad 1: DATABASE_URL (producción en Aiven)
 if (process.env.DATABASE_URL) {
   sequelize = new Sequelize(process.env.DATABASE_URL, makeOptions(baseConfig));
-}
-// Prioridad 2: config.url (si lo definiste en config.js)
-else if (baseConfig.url) {
+} else if (baseConfig.url) {
   sequelize = new Sequelize(baseConfig.url, makeOptions(baseConfig));
-}
-// Prioridad 3: username/password/host/port/database
-else {
+} else {
   const {
-    database,
-    username,
-    password,
-    host,
-    port,
-    dialect = "mysql",
+    database, username, password, host, port, dialect = "mysql",
   } = baseConfig;
-
   sequelize = new Sequelize(database, username, password, makeOptions({
-    host,
-    port,
-    dialect,
+    host, port, dialect,
   }));
 }
 
 // Auto-carga recursiva de modelos
-const basename = path.basename(__filename);
 const files = [];
 const walk = (dir) => {
   const entries = fs.readdirSync(dir);

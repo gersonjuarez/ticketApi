@@ -1,4 +1,3 @@
-// controllers/ticketController.js
 const { Op } = require('sequelize');
 const {
   TicketRegistration,
@@ -12,6 +11,7 @@ const {
   sequelize,
 } = require('../models');
 const Attendance = require('../services/attendance.service');
+const { fmtLocalDateTime } = require('../utils/time');
 
 /* ============================
    Helpers
@@ -26,16 +26,6 @@ const getTodayBounds = () => {
 };
 
 const s = (v, def = '') => (v === null || v === undefined ? def : String(v));
-
-const fmtDateTime = (d = new Date()) => {
-  const pad = (n) => String(n).padStart(2, '0');
-  const yyyy = d.getFullYear();
-  const mm = pad(d.getMonth() + 1);
-  const dd = pad(d.getDate());
-  const hh = pad(d.getHours());
-  const mi = pad(d.getMinutes());
-  return `${yyyy}-${mm}-${dd} ${hh}:${mi}`;
-};
 
 const toTicketPayload = (ticket, client = null, service = null) => ({
   idTicketRegistration: ticket.idTicketRegistration,
@@ -89,18 +79,15 @@ const isUniqueError = (err) => {
 /** Clausula de visibilidad por servicio respetando la “bandera” forcedToCashierId */
 const addForcedVisibilityClause = (baseWhere, idCashierQ, respectForced) => {
   if (!respectForced) return baseWhere;
-  // Si no se conoce el cajero que consulta, ocultamos todo ticket forzado
   if (!idCashierQ) {
     return { ...baseWhere, forcedToCashierId: null };
   }
-  // Si hay cajero, mostramos no forzados o forzados a él
   const orForced = { [Op.or]: [{ forcedToCashierId: null }, { forcedToCashierId: idCashierQ }] };
   return baseWhere[Op.and]
     ? { ...baseWhere, [Op.and]: [...baseWhere[Op.and], orForced] }
     : { ...baseWhere, [Op.and]: [orForced] };
 };
 
-/** Resuelve un servicio por su prefix (case-insensitive) y devuelve la entidad o null */
 async function getServiceByPrefix(prefix) {
   if (!prefix) return null;
   return Service.findOne({
@@ -111,22 +98,11 @@ async function getServiceByPrefix(prefix) {
   });
 }
 
-/** Formatea con 2 dígitos: 1 -> "01" */
 const pad2 = (n) => String(n).padStart(2, '0');
 
 /**
  * Contador atómico por (service_id, turn_date).
- * - Si no hay fila hoy: la crea con next_number=1 y devuelve 1
- * - Si hay fila: incrementa y devuelve el nuevo valor
- * Usa SELECT ... FOR UPDATE para evitar carreras.
- *
- * Requiere una tabla:
- *   CREATE TABLE IF NOT EXISTS service_turn_counters (
- *     service_id  INT  NOT NULL,
- *     turn_date   DATE NOT NULL,
- *     next_number INT  NOT NULL,
- *     PRIMARY KEY (service_id, turn_date)
- *   ) ENGINE=InnoDB;
+ * Requiere tabla service_turn_counters (ver tu DDL).
  */
 async function getNextTurnNumber(serviceId, t) {
   const [rows] = await sequelize.query(
@@ -164,14 +140,13 @@ exports.findAll = async (req, res) => {
   try {
     const { prefix, idCashier: idCashierRaw, respectForced } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = respectForced !== 'false'; // por defecto true
+    const respect = respectForced !== 'false';
 
     let where = { idTicketStatus: 1 };
 
-    // 🔁 CAMBIO: si viene prefix, filtramos por idService del prefix
     if (prefix) {
       const svc = await getServiceByPrefix(prefix);
-      if (!svc) return res.json([]); // servicio inexistente => vacío
+      if (!svc) return res.json([]);
       where.idService = svc.idService;
     }
 
@@ -193,11 +168,10 @@ exports.findAllDispatched = async (req, res) => {
   try {
     const { prefix, idCashier: idCashierRaw, respectForced } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = respectForced !== 'false'; // por defecto true
+    const respect = respectForced !== 'false';
 
     let where = { idTicketStatus: 2 };
 
-    // 🔁 CAMBIO: si viene prefix, filtramos por idService del prefix
     if (prefix) {
       const svc = await getServiceByPrefix(prefix);
       if (!svc) return res.json([]);
@@ -222,7 +196,7 @@ exports.findById = async (req, res) => {
     const ticket = await TicketRegistration.findByPk(req.params.id, {
       include: [{ model: Client }, { model: Service }],
     });
-  if (!ticket) return res.status(404).json({ error: 'Not found' });
+    if (!ticket) return res.status(404).json({ error: 'Not found' });
     return res.json(toTicketPayload(ticket));
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -269,7 +243,6 @@ exports.create = async (req, res, next) => {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const t = await sequelize.transaction();
       try {
-        // === Contador atómico por servicio/día ===
         const turnNumber = await getNextTurnNumber(idService, t);
         const correlativo = `${service.prefix}-${pad2(turnNumber)}`;
 
@@ -283,7 +256,7 @@ exports.create = async (req, res, next) => {
             status: true,
             correlativo,
             forcedToCashierId: null,
-            print_status: 'pending',
+            printStatus: 'pending',
           },
           { transaction: t }
         );
@@ -314,9 +287,7 @@ exports.create = async (req, res, next) => {
     const socketPayload = toTicketPayload(createdTicket, client, service);
 
     if (io) {
-      // ✅ Solo al servicio correspondiente
       io.to(room).emit('new-ticket', socketPayload);
-      // (Opcional) TV
       io.to('tv').emit('new-ticket', socketPayload);
     }
 
@@ -339,7 +310,7 @@ exports.create = async (req, res, next) => {
           dpi: s(client?.dpi, ''),
           service: s(service.name, ''),
           footer: 'Gracias por su visita',
-          dateTime: fmtDateTime(new Date()),
+          dateTime: fmtLocalDateTime(new Date()), // 👈 hora local en el papel
         };
 
         const newJob = await PrintOutbox.create({
@@ -360,7 +331,7 @@ exports.create = async (req, res, next) => {
           });
 
           await TicketRegistration.update(
-            { print_status: 'sent' },
+            { printStatus: 'sent' },
             { where: { idTicketRegistration: createdTicket.idTicketRegistration } }
           );
 
@@ -395,7 +366,7 @@ exports.getTicketsByPrefix = async (req, res, next) => {
     const { prefix } = req.params;
     const { idCashier: idCashierRaw, respectForced } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = respectForced !== 'false'; // por defecto true
+    const respect = respectForced !== 'false';
 
     const service = await getServiceByPrefix(prefix);
     if (!service) return res.status(404).json({ message: 'Servicio no encontrado.' });
@@ -540,7 +511,7 @@ exports.update = async (req, res) => {
         {
           idTicket: Number(ticketId),
           idCashier: newCashierId,
-          idService: currentTicket.idService, // regla actual: mantener idService del ticket
+          idService: currentTicket.idService,
           at: now,
         },
         t
@@ -625,7 +596,6 @@ exports.update = async (req, res) => {
       io2.emit('ticket-updated', payload);
     }
 
-    // 👇 Empuja el siguiente ticket al cajero que quedó libre al completar/cancelar
     try {
       const socketModule = require('../server/socket');
       if (currentTicket.idTicketStatus === 2 && (newStatus === 4 || newStatus === 3)) {
@@ -654,7 +624,6 @@ exports.getPendingTickets = async (req, res) => {
 
     let where = { idTicketStatus: parseInt(req.query.status || 1, 10) };
 
-    // 🔁 CAMBIO: si viene prefix, filtramos por idService del prefix (no por correlativo)
     if (prefix) {
       const svc = await getServiceByPrefix(prefix);
       if (!svc) return res.json([]);
@@ -705,7 +674,6 @@ exports.findAllLive = async (req, res) => {
 
     let where = { status: true, idTicketStatus: { [Op.in]: ids } };
 
-    // 🔁 CAMBIO: si viene prefix, mapeamos a idService
     if (prefix) {
       const svc = await getServiceByPrefix(prefix);
       if (!svc) return res.json([]);
@@ -735,7 +703,7 @@ exports.findAllLive = async (req, res) => {
 };
 
 /* ============================
-   TRANSFERIR TICKET (con renumeración segura)
+   TRANSFERIR TICKET
 ============================ */
 exports.transfer = async (req, res) => {
   const t = await sequelize.transaction();
@@ -834,14 +802,12 @@ exports.transfer = async (req, res) => {
 
     const prevStatus = ticket.idTicketStatus;
 
-    // ===== RENOMBRADO/RENÚMERO SI CAMBIA DE SERVICIO =====
     const needsRenumber = Number(ticket.idService) !== destServiceId;
     let nextTurn = ticket.turnNumber;
     let nextCorrelativo = ticket.correlativo;
     let destPrefix = (toCashier.Service?.prefix || '').toUpperCase();
 
     if (needsRenumber) {
-      // Número seguro y en orden usando el contador atómico del destino
       const maxAttempts = 3;
       let okNum = false; let lastErr = null;
 
@@ -860,22 +826,20 @@ exports.transfer = async (req, res) => {
       if (!okNum && lastErr) throw lastErr;
     }
 
-    // ===== APLICAR CAMBIOS =====
     let newStatus = prevStatus;
     let assignedNow = false;
 
     if (isDestBusy || !autoAssign) {
-      newStatus = 1; // va a cola del destino
+      newStatus = 1; // cola en destino
     } else {
-      newStatus = 2; // asignado al destino de una vez
+      newStatus = 2; // asignado en destino
       assignedNow = true;
     }
 
-    // Hacemos un update con todos los campos, incluyendo renumeración si aplica
     const updateData = {
       idTicketStatus: newStatus,
       idCashier: assignedNow ? toCashier.idCashier : null,
-      forcedToCashierId: toCashier.idCashier, // forzado al destino (en cola o atendido)
+      forcedToCashierId: toCashier.idCashier,
       idService: destServiceId,
       dispatchedByUser: assignedNow ? performedByUserId : null,
       ...(needsRenumber ? { turnNumber: nextTurn, correlativo: nextCorrelativo } : {}),
@@ -894,7 +858,6 @@ exports.transfer = async (req, res) => {
         } catch (err) {
           lastErr = err;
           if (isUniqueError(err) && attempt < 3) {
-            // Si hubo choque de unique, pedimos otro número y reintentamos
             const n = await getNextTurnNumber(destServiceId, t);
             nextTurn = n;
             nextCorrelativo = `${destPrefix}-${pad2(nextTurn)}`;
@@ -910,7 +873,6 @@ exports.transfer = async (req, res) => {
       await tryUpdate();
     }
 
-    // Logs de transferencia e historial
     await TicketTransferLog.create(
       {
         idTicketRegistration: ticket.idTicketRegistration,
@@ -932,7 +894,6 @@ exports.transfer = async (req, res) => {
       { transaction: t }
     );
 
-    // Attendance
     const now = new Date();
     if (prevStatus === 2) {
       await Attendance.closeOpenSpan({ idTicket: ticket.idTicketRegistration, at: now }, t);
@@ -951,7 +912,6 @@ exports.transfer = async (req, res) => {
 
     await t.commit();
 
-    // ====== Post-commit: spans y sockets ======
     let attentionStartedAt = null;
     if (assignedNow && newStatus === 2) {
       const openSpan = await TicketAttendance.findOne({
@@ -963,10 +923,9 @@ exports.transfer = async (req, res) => {
 
     const io3 = require('../server/socket').getIo?.();
     if (io3) {
-      const destPrefixUpper = destPrefix; // ya upper
+      const destPrefixUpper = destPrefix;
       const destRoom = destPrefixUpper.toLowerCase();
 
-      // 👇 Traemos nombre del cliente y nombre del módulo/servicio destino
       let usuarioName = 'Sin cliente';
       try {
         const cli = await Client.findByPk(ticket.idClient);
@@ -974,7 +933,6 @@ exports.transfer = async (req, res) => {
       } catch {}
       const moduloName = toCashier.Service?.name || '—';
 
-      // Payload enriquecido con usuario y modulo
       const payload = {
         idTicketRegistration: ticket.idTicketRegistration,
         turnNumber: nextTurn,
@@ -985,12 +943,10 @@ exports.transfer = async (req, res) => {
         idCashier: assignedNow ? toCashier.idCashier : null,
         forcedToCashierId: toCashier.idCashier,
         updatedAt: ticket.updatedAt,
-        // 👇 Incluye nombre de cliente y nombre del módulo
         usuario: usuarioName,
         modulo: moduloName,
       };
 
-      // 1) Purgar a todos los cajeros del servicio origen
       if (originPrefix) {
         io3.to(originPrefix.toLowerCase()).emit('ticket-removed', {
           idTicketRegistration: ticket.idTicketRegistration,
@@ -1000,7 +956,6 @@ exports.transfer = async (req, res) => {
         });
       }
 
-      // 2) Eventos dirigidos a cajeros (origen y destino)
       io3.to(`cashier:${fromCashierId}`).emit('ticket-transferred', {
         ticket: payload,
         fromCashierId: fromCashierId || null,
@@ -1016,9 +971,7 @@ exports.transfer = async (req, res) => {
         timestamp: Date.now(),
       });
 
-      // 3) Servicio destino
       if (assignedNow) {
-        // a) notificar asignación al cajero destino
         io3.to(`cashier:${toCashier.idCashier}`).emit('ticket-assigned', {
           ticket: payload,
           assignedToCashier: toCashier.idCashier,
@@ -1026,7 +979,6 @@ exports.transfer = async (req, res) => {
           timestamp: Date.now(),
           attentionStartedAt,
         });
-        // b) informar al servicio destino que ese ticket ya no está en cola
         io3.to(destRoom).emit('ticket-removed', {
           idTicketRegistration: ticket.idTicketRegistration,
           correlativo: nextCorrelativo,
@@ -1034,7 +986,6 @@ exports.transfer = async (req, res) => {
           timestamp: Date.now(),
         });
       } else {
-        // Queda en cola (pendiente y forzado al cajero destino)
         const queuedPayload = { ...payload, idTicketStatus: 1, idCashier: null };
         io3.to(destRoom).emit('new-ticket', queuedPayload);
         io3.to(`cashier:${toCashier.idCashier}`).emit('new-ticket', queuedPayload);
@@ -1043,11 +994,9 @@ exports.transfer = async (req, res) => {
         });
       }
 
-      // Broadcast general para dashboards
       io3.emit('ticket-updated', payload);
     }
 
-    // 👇 El cajero origen quedó libre; empuja su siguiente ticket
     try {
       const socketModule = require('../server/socket');
       if (fromCashierId) {

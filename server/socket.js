@@ -195,7 +195,7 @@ async function processPrintQueueBatch(io, batchSize = 15) {
 
       if (job.ticket_id) {
         await TicketRegistration.update(
-          { print_status: 'sent' },
+          { printStatus: 'sent' },
           { where: { idTicketRegistration: job.ticket_id } }
         );
       }
@@ -229,7 +229,7 @@ async function retryFailedPrints(io, maxAttempts = 5) {
         await job.update({ status: 'dead' });
         if (job.ticket_id) {
           await TicketRegistration.update(
-            { print_status: 'error' },
+            { printStatus: 'error' },
             { where: { idTicketRegistration: job.ticket_id } }
           );
         }
@@ -238,7 +238,7 @@ async function retryFailedPrints(io, maxAttempts = 5) {
       await job.update({ status: 'pending' });
       if (job.ticket_id) {
         await TicketRegistration.update(
-          { print_status: 'pending' },
+          { printStatus: 'pending' },
           { where: { idTicketRegistration: job.ticket_id } }
         );
       }
@@ -264,7 +264,7 @@ async function requeueStuckSentJobs(ttlMs = 45_000, maxAttempts = 5) {
         await job.update({ status: 'dead', last_error: 'ack timeout (dead)' });
         if (job.ticket_id) {
           await TicketRegistration.update(
-            { print_status: 'error' },
+            { printStatus: 'error' },
             { where: { idTicketRegistration: job.ticket_id } }
           );
         }
@@ -277,7 +277,7 @@ async function requeueStuckSentJobs(ttlMs = 45_000, maxAttempts = 5) {
       });
       if (job.ticket_id) {
         await TicketRegistration.update(
-          { print_status: 'pending' },
+          { printStatus: 'pending' },
           { where: { idTicketRegistration: job.ticket_id } }
         );
       }
@@ -421,7 +421,7 @@ module.exports = {
             await job.update({ status: 'done', last_error: null });
             if (job.ticket_id) {
               await TicketRegistration.update(
-                { print_status: 'printed', printedAt: new Date() },
+                { printStatus: 'printed', printedAt: sequelize.fn('UTC_TIMESTAMP') },
                 { where: { idTicketRegistration: job.ticket_id } }
               );
             }
@@ -430,7 +430,7 @@ module.exports = {
             await job.update({ status: 'failed', last_error: error || 'unknown error' });
             if (job.ticket_id) {
               await TicketRegistration.update(
-                { print_status: 'error' },
+                { printStatus: 'error' },
                 { where: { idTicketRegistration: job.ticket_id } }
               );
             }
