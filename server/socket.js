@@ -138,7 +138,8 @@ async function pickNextForCashier(prefix, idCashier) {
 
 /**
  * Envía un batch de trabajos 'pending' al bridge correspondiente.
- * Solo marca 'sent' si HAY sockets en el room del bridge.
+ * Reclama cada job de forma atómica marcándolo a 'sent' y lo emite.
+ * NO toca printedAt (eso lo hace el ACK).
  */
 async function processPrintQueueBatch(io, batchSize = 15) {
   if (isProcessingPrintQueue) return;
@@ -147,9 +148,8 @@ async function processPrintQueueBatch(io, batchSize = 15) {
   try {
     const { PrintOutbox, TicketRegistration, sequelize } = require('../models');
 
-    // Traemos candidatos con location_id/payload para poder chequear el room
     const candidates = await PrintOutbox.findAll({
-      attributes: ['id', 'location_id', 'payload', 'ticket_id'],
+      attributes: ['id'],
       where: { status: { [Op.or]: ['pending', '', null] } },
       order: [['createdAt', 'ASC']],
       limit: batchSize,
@@ -157,26 +157,9 @@ async function processPrintQueueBatch(io, batchSize = 15) {
 
     if (candidates.length === 0) return;
 
-    for (const job of candidates) {
-      const id = job.id;
+    for (const row of candidates) {
+      const id = row.id;
 
-      if (!job.location_id) {
-        await PrintOutbox.update(
-          { status: 'failed', last_error: 'location_id vacío' },
-          { where: { id } }
-        );
-        continue;
-      }
-
-      // ¿Hay algún bridge conectado a ese room?
-      const room = `bridge:${job.location_id}`;
-      const socketsInRoom = io.sockets.adapter.rooms.get(room);
-      if (!socketsInRoom || socketsInRoom.size === 0) {
-        // No hay quién reciba: dejamos en pending para que se intente cuando haya bridge
-        continue;
-      }
-
-      // Reclamar atómicamente: pending -> sent
       const [claimed] = await PrintOutbox.update(
         {
           status: 'sent',
@@ -191,9 +174,17 @@ async function processPrintQueueBatch(io, batchSize = 15) {
           },
         }
       );
+
       if (!claimed) continue;
 
-      // Parsear carga
+      const job = await PrintOutbox.findByPk(id);
+      if (!job) continue;
+
+      if (!job.location_id) {
+        await job.update({ status: 'failed', last_error: 'location_id vacío' });
+        continue;
+      }
+
       let parsed = {};
       try {
         parsed = typeof job.payload === 'string' ? JSON.parse(job.payload) : (job.payload || {});
@@ -204,13 +195,14 @@ async function processPrintQueueBatch(io, batchSize = 15) {
 
       if (job.ticket_id) {
         await TicketRegistration.update(
-          { printStatus: 'sent' },
+          { printStatus: 'sent' }, // <-- usar atributo del modelo
           { where: { idTicketRegistration: job.ticket_id } }
         );
       }
 
       console.log(`[print-worker] jobId=${id} → status=sent, emit to bridge:${job.location_id}`);
-      io.to(room).emit('print-ticket', {
+
+      io.to(`bridge:${job.location_id}`).emit('print-ticket', {
         jobId: id,
         type,
         payload: finalPayload || {},
@@ -237,7 +229,7 @@ async function retryFailedPrints(io, maxAttempts = 5) {
         await job.update({ status: 'dead' });
         if (job.ticket_id) {
           await TicketRegistration.update(
-            { printStatus: 'error' },
+            { printStatus: 'error' }, // <-- atributo correcto
             { where: { idTicketRegistration: job.ticket_id } }
           );
         }
@@ -246,7 +238,7 @@ async function retryFailedPrints(io, maxAttempts = 5) {
       await job.update({ status: 'pending' });
       if (job.ticket_id) {
         await TicketRegistration.update(
-          { printStatus: 'pending' },
+          { printStatus: 'pending' }, // <-- atributo correcto
           { where: { idTicketRegistration: job.ticket_id } }
         );
       }
@@ -272,7 +264,7 @@ async function requeueStuckSentJobs(ttlMs = 45_000, maxAttempts = 5) {
         await job.update({ status: 'dead', last_error: 'ack timeout (dead)' });
         if (job.ticket_id) {
           await TicketRegistration.update(
-            { printStatus: 'error' },
+            { printStatus: 'error' }, // <-- atributo correcto
             { where: { idTicketRegistration: job.ticket_id } }
           );
         }
@@ -285,7 +277,7 @@ async function requeueStuckSentJobs(ttlMs = 45_000, maxAttempts = 5) {
       });
       if (job.ticket_id) {
         await TicketRegistration.update(
-          { printStatus: 'pending' },
+          { printStatus: 'pending' }, // <-- atributo correcto
           { where: { idTicketRegistration: job.ticket_id } }
         );
       }
@@ -367,7 +359,7 @@ module.exports = {
         socket.join(room);
         console.log(`[socket] Bridge ${socket.id} registrado en room '${room}'`);
 
-        // Reabrir 'sent' viejos de esta location (desconexiones previas) y procesar ya
+        // Reabrir 'sent' viejos de esta location y procesar ya (evita esperar TTL)
         try {
           const { PrintOutbox } = require('../models');
           const cutoff = new Date(Date.now() - 10_000);
@@ -442,7 +434,7 @@ module.exports = {
             await job.update({ status: 'done', last_error: null });
             if (job.ticket_id) {
               await TicketRegistration.update(
-                { printStatus: 'printed', printedAt: new Date() }, // sin sequelize.fn
+                { printStatus: 'printed', printedAt: new Date() }, // atributo + fecha local del server
                 { where: { idTicketRegistration: job.ticket_id } }
               );
             }
@@ -722,7 +714,7 @@ module.exports = {
         }
       }
 
-      console.log(`[socket] Redistribuyendo tickets. Pendientes libres: ${tickets.length}, Disponibles: ${availableCashiers.length}, Ocupados: ${busyCashiers.size}`);
+      console.log(`[socket] Redistribuyendo tickets. Pendientes libres: ${tickets.length}, Disponibles: ${availableCashiers.length}, Ocupados:${busyCashiers.size}`);
 
       if (tickets.length > 0 && availableCashiers.length > 0) {
         const nextTicket = tickets[0];
