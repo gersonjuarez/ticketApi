@@ -1,3 +1,4 @@
+// controllers/ticketRegistration.controller.js
 const { Op } = require('sequelize');
 const {
   TicketRegistration,
@@ -11,21 +12,49 @@ const {
   sequelize,
 } = require('../models');
 const Attendance = require('../services/attendance.service');
-const { fmtLocalDateTime } = require('../utils/time');
+
+// Helpers nuevos (asegúrate de tener los archivos en utils/)
+const { getNextTurnNumber, padN } = require('../utils/turnNumbers');
+const { fmtGuatemalaYYYYMMDDHHmm } = require('../utils/time-tz');
 
 /* ============================
-   Helpers
+   Helpers locales ligeros
 ============================ */
+const s = (v, def = '') => (v === null || v === undefined ? def : String(v));
 
-const getTodayBounds = () => {
-  const start = new Date();
-  start.setHours(0, 0, 0, 0);
-  const end = new Date(start);
-  end.setDate(end.getDate() + 1);
-  return { start, end };
+async function getServiceByPrefix(prefix) {
+  if (!prefix) return null;
+  return Service.findOne({
+    where: sequelize.where(
+      sequelize.fn('upper', sequelize.col('prefix')),
+      String(prefix).toUpperCase()
+    ),
+  });
+}
+
+const isUniqueError = (err) => {
+  if (!err) return false;
+  const msg = String(err.message || '').toLowerCase();
+  return (
+    err.name === 'SequelizeUniqueConstraintError' ||
+    msg.includes('unique') ||
+    msg.includes('duplicate') ||
+    msg.includes('duplicada') ||
+    msg.includes('duplicado')
+  );
 };
 
-const s = (v, def = '') => (v === null || v === undefined ? def : String(v));
+/** Clausula de visibilidad por servicio respetando la “bandera” forcedToCashierId */
+const addForcedVisibilityClause = (baseWhere, idCashierQ, respectForced) => {
+  if (!respectForced) return baseWhere;
+  if (!idCashierQ) {
+    return { ...baseWhere, forcedToCashierId: null };
+  }
+  const orForced = { [Op.or]: [{ forcedToCashierId: null }, { forcedToCashierId: idCashierQ }] };
+  return baseWhere[Op.and]
+    ? { ...baseWhere, [Op.and]: [...baseWhere[Op.and], orForced] }
+    : { ...baseWhere, [Op.and]: [orForced] };
+};
 
 const toTicketPayload = (ticket, client = null, service = null) => ({
   idTicketRegistration: ticket.idTicketRegistration,
@@ -63,74 +92,6 @@ const toCreatedTicketPayload = ({ ticket, client, service, cashier = null }) => 
   idCashier: ticket.idCashier ?? null,
   cashier: cashier ? { idCashier: cashier.idCashier, name: cashier.name } : null,
 });
-
-const isUniqueError = (err) => {
-  if (!err) return false;
-  const msg = String(err.message || '').toLowerCase();
-  return (
-    err.name === 'SequelizeUniqueConstraintError' ||
-    msg.includes('unique') ||
-    msg.includes('duplicate') ||
-    msg.includes('duplicada') ||
-    msg.includes('duplicado')
-  );
-};
-
-/** Clausula de visibilidad por servicio respetando la “bandera” forcedToCashierId */
-const addForcedVisibilityClause = (baseWhere, idCashierQ, respectForced) => {
-  if (!respectForced) return baseWhere;
-  if (!idCashierQ) {
-    return { ...baseWhere, forcedToCashierId: null };
-  }
-  const orForced = { [Op.or]: [{ forcedToCashierId: null }, { forcedToCashierId: idCashierQ }] };
-  return baseWhere[Op.and]
-    ? { ...baseWhere, [Op.and]: [...baseWhere[Op.and], orForced] }
-    : { ...baseWhere, [Op.and]: [orForced] };
-};
-
-async function getServiceByPrefix(prefix) {
-  if (!prefix) return null;
-  return Service.findOne({
-    where: sequelize.where(
-      sequelize.fn('upper', sequelize.col('prefix')),
-      String(prefix).toUpperCase()
-    ),
-  });
-}
-
-const pad2 = (n) => String(n).padStart(2, '0');
-
-/**
- * Contador atómico por (service_id, turn_date).
- * Requiere tabla service_turn_counters (ver tu DDL).
- */
-async function getNextTurnNumber(serviceId, t) {
-  const [rows] = await sequelize.query(
-    `SELECT next_number
-       FROM service_turn_counters
-      WHERE service_id = ? AND turn_date = CURDATE()
-      FOR UPDATE`,
-    { replacements: [serviceId], transaction: t }
-  );
-
-  if (rows.length === 0) {
-    await sequelize.query(
-      `INSERT INTO service_turn_counters (service_id, turn_date, next_number)
-       VALUES (?, CURDATE(), 1)`,
-      { replacements: [serviceId], transaction: t }
-    );
-    return 1;
-  }
-
-  const assigned = Number(rows[0].next_number) + 1;
-  await sequelize.query(
-    `UPDATE service_turn_counters
-        SET next_number = ?
-      WHERE service_id = ? AND turn_date = CURDATE()`,
-    { replacements: [assigned, serviceId], transaction: t }
-  );
-  return assigned;
-}
 
 /* ============================
    Listados simples
@@ -206,13 +167,14 @@ exports.findById = async (req, res) => {
 /* ============================
    CREAR TICKET con reintento
 ============================ */
-
 exports.create = async (req, res, next) => {
   const { dpi, name, idService: idServiceRaw, locationId } = req.body;
+
   try {
     const idService =
       typeof idServiceRaw === 'string' ? parseInt(idServiceRaw, 10) : idServiceRaw;
 
+    // Validaciones
     if (!name || name.trim() === '') {
       return res.status(400).json({ message: 'El nombre es obligatorio.' });
     }
@@ -235,7 +197,7 @@ exports.create = async (req, res, next) => {
       return res.status(404).json({ message: 'Servicio no encontrado.' });
     }
 
-    // 3) Reintento de creación
+    // 3) Reintento de creación con transacción (colisiones únicas)
     const maxAttempts = 3;
     let createdTicket = null;
     let lastErr = null;
@@ -243,13 +205,14 @@ exports.create = async (req, res, next) => {
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       const t = await sequelize.transaction();
       try {
+        // Número de turno por día (America/Guatemala) + correlativo 3 dígitos
         const turnNumber = await getNextTurnNumber(idService, t);
-        const correlativo = `${service.prefix}-${pad2(turnNumber)}`;
+        const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
 
         const ticket = await TicketRegistration.create(
           {
             turnNumber,
-            idTicketStatus: 1,
+            idTicketStatus: 1, // pendiente
             idClient: client.idClient,
             idService,
             idCashier: null,
@@ -269,6 +232,7 @@ exports.create = async (req, res, next) => {
         try { if (t.finished !== 'commit') await t.rollback(); } catch {}
         lastErr = err;
         if (isUniqueError(err) && attempt < maxAttempts) {
+          // pequeño backoff aleatorio
           await new Promise((r) => setTimeout(r, Math.floor(Math.random() * 25) + 10));
           continue;
         }
@@ -291,8 +255,9 @@ exports.create = async (req, res, next) => {
       io.to('tv').emit('new-ticket', socketPayload);
     }
 
-    // ====== COLA DE IMPRESIÓN ======
+    // ====== COLA DE IMPRESIÓN (con expiración para evitar backlog) ======
     if (locationId) {
+      // evita duplicar jobs “abiertos” para el mismo ticket
       const existing = await PrintOutbox.findOne({
         where: {
           ticket_id: createdTicket.idTicketRegistration,
@@ -310,8 +275,13 @@ exports.create = async (req, res, next) => {
           dpi: s(client?.dpi, ''),
           service: s(service.name, ''),
           footer: 'Gracias por su visita',
-          dateTime: fmtLocalDateTime(new Date()), // 👈 hora local en el papel
+          // Hora de Guatemala para el papel
+          dateTime: fmtGuatemalaYYYYMMDDHHmm(new Date()),
         };
+
+        // TTL del job (ajústalo a tu operación)
+        const TTL_MS = 60_000;
+        const expiresAt = new Date(Date.now() + TTL_MS);
 
         const newJob = await PrintOutbox.create({
           ticket_id: createdTicket.idTicketRegistration,
@@ -319,8 +289,12 @@ exports.create = async (req, res, next) => {
           payload: printPayload,
           status: 'pending',
           attempts: 0,
+          // Nota: agrega esta columna en la BD si aún no existe:
+          // ALTER TABLE print_outbox ADD COLUMN expires_at DATETIME NULL;
+          expires_at: expiresAt,
         });
 
+        // Si el bridge está online, despacha ya
         const socketModule = require('../server/socket');
         const io2 = socketModule.getIo?.();
         if (io2) {
@@ -344,6 +318,7 @@ exports.create = async (req, res, next) => {
       }
     }
 
+    // Respuesta
     const responsePayload = toCreatedTicketPayload({
       ticket: createdTicket,
       client,
@@ -353,7 +328,7 @@ exports.create = async (req, res, next) => {
 
     return res.status(201).json(responsePayload);
   } catch (err) {
-    return next(err);
+    return res.status(500).json({ error: String(err?.message || err) });
   }
 };
 
@@ -815,7 +790,7 @@ exports.transfer = async (req, res) => {
         try {
           const n = await getNextTurnNumber(destServiceId, t);
           nextTurn = n;
-          nextCorrelativo = `${destPrefix}-${pad2(nextTurn)}`;
+          nextCorrelativo = `${destPrefix}-${padN(nextTurn, 3)}`;
           okNum = true;
           break;
         } catch (err) {
@@ -860,7 +835,7 @@ exports.transfer = async (req, res) => {
           if (isUniqueError(err) && attempt < 3) {
             const n = await getNextTurnNumber(destServiceId, t);
             nextTurn = n;
-            nextCorrelativo = `${destPrefix}-${pad2(nextTurn)}`;
+            nextCorrelativo = `${destPrefix}-${padN(nextTurn, 3)}`;
             updateData.turnNumber = nextTurn;
             updateData.correlativo = nextCorrelativo;
             continue;
