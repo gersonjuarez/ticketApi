@@ -12,7 +12,7 @@ const {
   sequelize,
 } = require('../models');
 const Attendance = require('../services/attendance.service');
-
+const { Op, Transaction } = require('sequelize');
 // Helpers nuevos (asegúrate de tener los archivos en utils/)
 const { getNextTurnNumber, padN } = require('../utils/turnNumbers');
 const { fmtGuatemalaYYYYMMDDHHmm } = require('../utils/time-tz');
@@ -203,7 +203,9 @@ exports.create = async (req, res, next) => {
     let lastErr = null;
 
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const t = await sequelize.transaction();
+      const t = await sequelize.transaction({
+        isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
+      });
       try {
         // Número de turno por día (America/Guatemala) + correlativo 3 dígitos
         const turnNumber = await getNextTurnNumber(idService, t);
@@ -971,28 +973,31 @@ exports.transfer = async (req, res) => {
 
     const tryUpdate = async () => { await ticket.update(updateData, { transaction: t }); };
 
-    if (needsRenumber) {
-      let ok = false; let lastErr = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          await tryUpdate(); ok = true; break;
-        } catch (err) {
-          lastErr = err;
-          if (isUniqueError(err) && attempt < 3) {
-            const n = await getNextTurnNumber(destServiceId, t);
-            nextTurn = n;
-            nextCorrelativo = `${destPrefix}-${padN(nextTurn, 3)}`;
-            updateData.turnNumber = nextTurn;
-            updateData.correlativo = nextCorrelativo;
-            continue;
-          }
-          throw err;
-        }
-      }
-      if (!ok) throw lastErr;
-    } else {
+  if (needsRenumber) {
+  let ok = false; let lastErr = null;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
       await tryUpdate();
+      ok = true; break;
+    } catch (err) {
+      lastErr = err;
+      if (isUniqueError(err) && attempt < 3) {
++       // Pequeño backoff para dejar que se consoliden commits de otros writers
++       await new Promise(r => setTimeout(r, 25 + Math.floor(Math.random() * 35)));
+        const n = await getNextTurnNumber(destServiceId, t);
+        nextTurn = n;
+        nextCorrelativo = `${destPrefix}-${padN(nextTurn, 3)}`;
+        updateData.turnNumber = nextTurn;
+        updateData.correlativo = nextCorrelativo;
+        continue;
+      }
+      throw err;
     }
+  }
+  if (!ok) throw lastErr;
+} else {
+  await tryUpdate();
+}
 
     await TicketTransferLog.create(
       {
