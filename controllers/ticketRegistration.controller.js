@@ -1,5 +1,5 @@
 // controllers/ticketRegistration.controller.js
-const { Op } = require('sequelize');
+const { Op ,Transaction} = require('sequelize');
 const {
   TicketRegistration,
   TicketAttendance,
@@ -12,7 +12,7 @@ const {
   sequelize,
 } = require('../models');
 const Attendance = require('../services/attendance.service');
-const { Op, Transaction } = require('sequelize');
+
 // Helpers nuevos (asegúrate de tener los archivos en utils/)
 const { getNextTurnNumber, padN } = require('../utils/turnNumbers');
 const { fmtGuatemalaYYYYMMDDHHmm } = require('../utils/time-tz');
