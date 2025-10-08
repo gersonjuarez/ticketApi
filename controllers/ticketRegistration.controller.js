@@ -17,18 +17,25 @@ const Attendance = require('../services/attendance.service');
 const { getNextTurnNumber, padN } = require('../utils/turnNumbers');
 const { fmtGuatemalaYYYYMMDDHHmm } = require('../utils/time-tz');
 // Prioriza tickets reservados para el cajero dado (0 = mayor prioridad)
-const buildOrderForCashier = (cashierId = 0) => [
-  [
-    sequelize.literal(
-      `CASE WHEN "forcedToCashierId" = ${Number(cashierId) || 0} THEN 0 ELSE 1 END`
-    ),
-    'ASC',
-  ],
-  ['idTicketStatus', 'ASC'], // PENDIENTE(1) antes que EN_ATENCION(2) si se mezclan
-  ['updatedAt', 'ASC'],      // cambios recientes primero (transfer/reserve)
-  ['turnNumber', 'ASC'],
-  ['createdAt', 'ASC'],
-];
+const buildOrderForCashier = (cashierId = 0) => {
+  const cid = Number(cashierId) || 0;
+  return [
+    [
+      sequelize.literal(`
+        CASE
+          WHEN "forcedToCashierId" = ${cid} THEN 0
+          WHEN "forcedToCashierId" IS NULL THEN 1
+          ELSE 2
+        END
+      `),
+      'ASC',
+    ],
+    ['idTicketStatus', 'ASC'], // PENDIENTE (1) antes que EN_ATENCION (2) si se mezclan
+    ['updatedAt', 'ASC'],
+    ['turnNumber', 'ASC'],
+    ['createdAt', 'ASC'],
+  ];
+};
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
   if (!svcId) return baseWhere;
@@ -420,116 +427,75 @@ exports.getTicketsByPrefix = async (req, res, next) => {
   }
 };
 
+// controllers/ticketRegistration.controller.js
 
 exports.getTicketsForCashier = async (req, res) => {
   try {
-    const { idCashier } = req.query;
-    const cashierId = parseInt(idCashier || 0, 10);
+    const cashierId = parseInt(req.query.idCashier || 0, 10);
     if (!cashierId) {
       return res.status(400).json({ error: 'idCashier requerido' });
     }
 
-    // 1) Intentar obtener el "current" si ya está en atención
-    let currentTicket = await TicketRegistration.findOne({
+    // Permitir opt-in explícito del viejo comportamiento (por si lo necesitas)
+    const autoClaimReserved =
+      String(req.query.autoClaimReserved || '').toLowerCase() === 'true';
+
+    // Traer la ventanilla para conocer su servicio
+    const cashier = await Cashier.findByPk(cashierId, {
+      include: [{ model: Service, attributes: ['idService', 'prefix', 'name'] }],
+    });
+    if (!cashier || !cashier.status) {
+      return res.status(404).json({ error: 'Ventanilla no encontrada o inactiva' });
+    }
+    const svcId = Number(cashier.idService);
+
+    // 1) Si hay un ticket actual EN_ATENCION conmigo, lo devuelvo tal cual (sin mutar estado)
+    const currentTicket = await TicketRegistration.findOne({
       where: { idTicketStatus: STATUS.EN_ATENCION, idCashier: cashierId, status: true },
       include: [{ model: Client }, { model: Service }],
       order: [['turnNumber', 'ASC']],
     });
 
-    // 2) Si NO hay current, auto-claim atómico del reservado (si existe)
-    if (!currentTicket) {
-      const t = await sequelize.transaction();
-      try {
-        // lock de verificación: ¿sigue libre?
-        const stillIdle = await TicketRegistration.findOne({
-          where: { idTicketStatus: STATUS.EN_ATENCION, idCashier: cashierId, status: true },
-          transaction: t,
-          lock: t.LOCK.UPDATE,
-        });
+    // 2) Armar la cola combinada:
+    //    a) PENDIENTES reservados para mí (forcedToCashierId = cashierId)
+    //    b) PENDIENTES del servicio de mi ventanilla que NO estén reservados a otros (forcedToCashierId IS NULL)
+    //    -> Orden: primero (a), luego (b), y dentro, por prioridad/ordenamiento usual
+    const queueWhere = {
+      status: true,
+      idTicketStatus: STATUS.PENDIENTE,
+      [Op.or]: [
+        { forcedToCashierId: cashierId },                         // (a) reservados para mí
+        { [Op.and]: [{ idService: svcId }, { forcedToCashierId: null }] }, // (b) del servicio, sin reserva de otro
+      ],
+    };
 
-        if (!stillIdle) {
-          // Buscar reservado para mí (pendiente)
-          const reserved = await TicketRegistration.findOne({
-            where: { status: true, idTicketStatus: STATUS.PENDIENTE, forcedToCashierId: cashierId },
-            include: [{ model: Client }, { model: Service }],
-            order: buildOrderForCashier(cashierId),
-            transaction: t,
-            lock: t.LOCK.UPDATE,
-          });
-
-          if (reserved) {
-            const now = new Date();
-
-            await reserved.update(
-              {
-                idTicketStatus: STATUS.EN_ATENCION,
-                idCashier: cashierId,
-                dispatchedByUser: req.query.changedByUser || 1,
-              },
-              { transaction: t }
-            );
-
-            await TicketHistory.create(
-              {
-                idTicket: reserved.idTicketRegistration,
-                fromStatus: STATUS.PENDIENTE,
-                toStatus: STATUS.EN_ATENCION,
-                changedByUser: req.query.changedByUser || 1,
-              },
-              { transaction: t }
-            );
-
-            await Attendance.rotateSpan(
-              {
-                idTicket: reserved.idTicketRegistration,
-                idCashier: cashierId,
-                idService: reserved.idService,
-                at: now,
-              },
-              t
-            );
-
-            await t.commit();
-            currentTicket = reserved;
-
-            // sockets opcionales
-            try {
-              const io = require('../server/socket').getIo?.();
-              if (io) {
-                const payload = toTicketPayload(reserved, reserved.Client, reserved.Service);
-                io.to(`cashier:${cashierId}`).emit('ticket-assigned', {
-                  ticket: payload,
-                  assignedToCashier: cashierId,
-                  previousStatus: STATUS.PENDIENTE,
-                  timestamp: Date.now(),
-                  attentionStartedAt: now,
-                });
-                io.emit('ticket-updated', payload);
-              }
-            } catch {}
-          } else {
-            await t.rollback();
-          }
-        } else {
-          await t.rollback();
-        }
-      } catch (e) {
-        try { if (t && t.finished !== 'commit') await t.rollback(); } catch {}
-      }
-    }
-
-    // 3) Cola (solo los reservados para esta ventanilla), ordenada con prioridad
     const queueTickets = await TicketRegistration.findAll({
-      where: { idTicketStatus: STATUS.PENDIENTE, status: true, forcedToCashierId: cashierId },
+      where: queueWhere,
       include: [{ model: Client }, { model: Service }],
-      order: buildOrderForCashier(cashierId),
+      order: [
+        // fuerza prioridad: mis reservados primero, luego servicio sin reserva
+        [
+          sequelize.literal(`
+            CASE
+              WHEN "forcedToCashierId" = ${cashierId} THEN 0
+              WHEN "forcedToCashierId" IS NULL THEN 1
+              ELSE 2
+            END
+          `),
+          'ASC',
+        ],
+        ['updatedAt', 'ASC'],
+        ['turnNumber', 'ASC'],
+        ['createdAt', 'ASC'],
+      ],
     });
 
     const response = {
-      current: currentTicket ? toTicketPayload(currentTicket) : null,
-      queue: queueTickets.map((t) => toTicketPayload(t)),
+      current: currentTicket ? toTicketPayload(currentTicket, currentTicket.Client, currentTicket.Service) : null,
+      queue: queueTickets.map((t) => toTicketPayload(t, t.Client, t.Service)),
     };
 
+    // Si existe ticket en atención, añadimos la marca de inicio (sin mutar nada)
     if (response.current && response.current.idTicketStatus === STATUS.EN_ATENCION) {
       const openSpan = await TicketAttendance.findOne({
         where: { idTicket: response.current.idTicketRegistration, endedAt: null },
@@ -538,12 +504,32 @@ exports.getTicketsForCashier = async (req, res) => {
       response.currentAttentionStartedAt = openSpan ? openSpan.startedAt : null;
     }
 
-    res.json(response);
+    // ---- Compatibilidad: si alguien quiere el viejo auto-claim (no recomendado) ----
+    if (!currentTicket && autoClaimReserved) {
+      // Buscar reservado para mí (pendiente) pero NO mutar por defecto
+      const reserved = await TicketRegistration.findOne({
+        where: {
+          status: true,
+          idTicketStatus: STATUS.PENDIENTE,
+          forcedToCashierId: cashierId,
+        },
+        include: [{ model: Client }, { model: Service }],
+        order: buildOrderForCashier(cashierId),
+      });
+
+      if (reserved) {
+        response.nextReserved = toTicketPayload(reserved, reserved.Client, reserved.Service);
+        // OJO: NO cambiamos estado aquí. El front debe llamar a /update con EN_ATENCION
+      }
+    }
+
+    return res.json(response);
   } catch (error) {
     console.error('[getTicketsForCashier] Error:', error);
     res.status(500).json({ error: error.message });
   }
 };
+
 
 
 exports.update = async (req, res) => {

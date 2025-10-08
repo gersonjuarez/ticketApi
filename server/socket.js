@@ -17,11 +17,16 @@ let isProcessingPrintQueue = false;
    Utils
 ============================ */
 /** Al reconectar un cajero, restaurar su estado: EN_ATENCION o PENDIENTE forzado para él (cualquier servicio) */
-async function restoreCashierState(idCashier) {
+/** Al reconectar un cajero, restaurar su estado sin mutar nada:
+ *  1) Si tiene EN_ATENCION → ese manda
+ *  2) Si no, mostrar primer PENDIENTE reservado para él en su servicio (preferPrefix)
+ *  3) Si no hay en su servicio, mostrar primer PENDIENTE reservado para él en cualquier servicio
+ */
+async function restoreCashierState(idCashier, preferPrefix = null) {
   try {
-    const { TicketRegistration, Service } = require('../models');
+    const { TicketRegistration, Service, sequelize } = require('../models');
 
-    // 1) Si tiene algo EN_ATENCION, eso manda
+    // 1) En atención conmigo
     const assigned = await TicketRegistration.findOne({
       where: { idTicketStatus: 2, idCashier: idCashier, status: true },
       include: [{ model: Service, attributes: ['prefix'] }],
@@ -36,14 +41,47 @@ async function restoreCashierState(idCashier) {
       return;
     }
 
-    // 2) Si no, mostrar el primer PENDIENTE reservado para él (aunque sea otro servicio)
-    const forced = await TicketRegistration.findOne({
+    // 2) Reservado para mí en MI servicio (si lo conozco)
+    if (preferPrefix && typeof preferPrefix === 'string') {
+      const svc = await Service.findOne({
+        where: sequelize.where(
+          sequelize.fn('upper', sequelize.col('prefix')),
+          String(preferPrefix).toUpperCase()
+        ),
+        attributes: ['idService', 'prefix'],
+      });
+
+      if (svc) {
+        const forcedInMyService = await TicketRegistration.findOne({
+          where: {
+            idTicketStatus: 1,
+            status: true,
+            forcedToCashierId: idCashier,
+            idService: svc.idService,
+          },
+          include: [{ model: Service, attributes: ['prefix'] }],
+          order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+        });
+
+        if (forcedInMyService) {
+          const payload = toDisplayPayload(forcedInMyService.Service?.prefix, forcedInMyService);
+          cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
+          emitToCashierDirect(idCashier, 'update-current-display', {
+            ticket: payload, isAssigned: false, timestamp: Date.now(),
+          });
+          return;
+        }
+      }
+    }
+
+    // 3) Reservado para mí en cualquier servicio
+    const forcedAny = await TicketRegistration.findOne({
       where: { idTicketStatus: 1, status: true, forcedToCashierId: idCashier },
       include: [{ model: Service, attributes: ['prefix'] }],
       order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
     });
-    if (forced) {
-      const payload = toDisplayPayload(forced.Service?.prefix, forced);
+    if (forcedAny) {
+      const payload = toDisplayPayload(forcedAny.Service?.prefix, forcedAny);
       cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
       emitToCashierDirect(idCashier, 'update-current-display', {
         ticket: payload, isAssigned: false, timestamp: Date.now(),
@@ -53,6 +91,7 @@ async function restoreCashierState(idCashier) {
     console.error('[socket:restoreCashierState] error:', e?.message || e);
   }
 }
+
 
 /** Obtiene idService a partir del prefix (case-insensitive) */
 async function getServiceIdByPrefix(prefix) {
