@@ -16,6 +16,43 @@ let isProcessingPrintQueue = false;
 /* ============================
    Utils
 ============================ */
+/** Al reconectar un cajero, restaurar su estado: EN_ATENCION o PENDIENTE forzado para él (cualquier servicio) */
+async function restoreCashierState(idCashier) {
+  try {
+    const { TicketRegistration, Service } = require('../models');
+
+    // 1) Si tiene algo EN_ATENCION, eso manda
+    const assigned = await TicketRegistration.findOne({
+      where: { idTicketStatus: 2, idCashier: idCashier, status: true },
+      include: [{ model: Service, attributes: ['prefix'] }],
+      order: [['updatedAt', 'DESC']],
+    });
+    if (assigned) {
+      const payload = toDisplayPayload(assigned.Service?.prefix, assigned);
+      cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: true });
+      emitToCashierDirect(idCashier, 'update-current-display', {
+        ticket: payload, isAssigned: true, timestamp: Date.now(),
+      });
+      return;
+    }
+
+    // 2) Si no, mostrar el primer PENDIENTE reservado para él (aunque sea otro servicio)
+    const forced = await TicketRegistration.findOne({
+      where: { idTicketStatus: 1, status: true, forcedToCashierId: idCashier },
+      include: [{ model: Service, attributes: ['prefix'] }],
+      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+    });
+    if (forced) {
+      const payload = toDisplayPayload(forced.Service?.prefix, forced);
+      cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
+      emitToCashierDirect(idCashier, 'update-current-display', {
+        ticket: payload, isAssigned: false, timestamp: Date.now(),
+      });
+    }
+  } catch (e) {
+    console.error('[socket:restoreCashierState] error:', e?.message || e);
+  }
+}
 
 /** Obtiene idService a partir del prefix (case-insensitive) */
 async function getServiceIdByPrefix(prefix) {
@@ -33,6 +70,7 @@ async function getServiceIdByPrefix(prefix) {
 
 /** Construye payload mínimo para pantallas */
 function toDisplayPayload(prefix, t) {
+  const pfx = (prefix ? String(prefix) : (t?.Service?.prefix || '')).toUpperCase();
   return {
     idTicketRegistration: t.idTicketRegistration,
     turnNumber: t.turnNumber,
@@ -44,7 +82,7 @@ function toDisplayPayload(prefix, t) {
     dispatchedByUser: t.dispatchedByUser,
     idService: t.idService,
     idClient: t.idClient,
-    prefix: String(prefix).toUpperCase(),
+    prefix: pfx,
     status: t.status,
     usuario: 'Sin cliente',
     modulo: '—',
@@ -332,6 +370,7 @@ module.exports = {
 
         socket.cashierInfo = { idCashier, prefix: room, idUser: idUser || null };
         console.log(`[socket] Cajero ${idCashier} (user: ${idUser}) registrado en servicio '${room}' con socket ${socket.id}`);
+        restoreCashierState(idCashier).catch(e => console.error('[socket] restoreCashierState:', e?.message || e));
 
         setTimeout(async () => {
           await module.exports.redistributeTickets(prefix);
@@ -638,6 +677,10 @@ module.exports = {
 
       if (actionType === 'assigned') {
         cashierCurrentDisplay.set(assignedToCashier, { currentTicket: ticket, isAssigned: true });
+          // ⬅️ Asegura que el cajero lo reciba aunque no esté suscrito al room de ese prefix
+  emitToCashierDirect(assignedToCashier, 'ticket-assigned', {
+    ticket, assignedToCashier, timestamp: Date.now(),
+  });
         io.to(room).emit('ticket-assigned', { ticket, assignedToCashier, timestamp: Date.now() });
         console.log(`[socket] Ticket ${ticket.correlativo} asignado a cajero ${assignedToCashier}`);
         // No redistribuir aquí: mantener focus para demás cajeros

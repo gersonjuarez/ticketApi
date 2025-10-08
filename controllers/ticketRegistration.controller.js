@@ -16,7 +16,24 @@ const Attendance = require('../services/attendance.service');
 // Helpers nuevos (asegúrate de tener los archivos en utils/)
 const { getNextTurnNumber, padN } = require('../utils/turnNumbers');
 const { fmtGuatemalaYYYYMMDDHHmm } = require('../utils/time-tz');
-
+const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
+  if (!svcId) return baseWhere;
+  if (respectForced && idCashierQ) {
+    // Muestra tickets del servicio actual O reservados para mí O en atención conmigo
+    const orBlock = {
+      [Op.or]: [
+        { idService: svcId },
+        { forcedToCashierId: idCashierQ },
+        { idCashier: idCashierQ },
+      ],
+    };
+    return baseWhere[Op.and]
+      ? { ...baseWhere, [Op.and]: [...baseWhere[Op.and], orBlock] }
+      : { ...baseWhere, [Op.and]: [orBlock] };
+  }
+  // Comportamiento clásico si no hay cashier/respectForced
+  return { ...baseWhere, idService: svcId };
+};
 /* ============================
    Constantes de estado
 ============================ */
@@ -110,16 +127,21 @@ exports.findAll = async (req, res) => {
   try {
     const { prefix, idCashier: idCashierRaw, respectForced } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = String(respectForced).toLowerCase() === 'true';
+
+    // ✅ default = true
+    const respect = respectForced !== 'false';
 
     let where = { idTicketStatus: STATUS.PENDIENTE };
 
+    let svc = null;
     if (prefix) {
-      const svc = await getServiceByPrefix(prefix);
+      svc = await getServiceByPrefix(prefix);
       if (!svc) return res.json([]);
-      where.idService = svc.idService;
+      // ⬇️ clave: OR por servicio/forced/idCashier
+      where = applyServiceOrForced(where, svc.idService, idCashierQ, respect);
     }
 
+    // ⬇️ clave: oculta los reservados a otros
     where = addForcedVisibilityClause(where, idCashierQ, respect);
 
     const tickets = await TicketRegistration.findAll({
@@ -134,18 +156,21 @@ exports.findAll = async (req, res) => {
   }
 };
 
+
 exports.findAllDispatched = async (req, res) => {
   try {
     const { prefix, idCashier: idCashierRaw, respectForced } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = respectForced !== 'false';
+    const respect = respectForced !== 'false'; // ✅ default true
 
     let where = { idTicketStatus: STATUS.EN_ATENCION };
 
+    let svc = null;
     if (prefix) {
-      const svc = await getServiceByPrefix(prefix);
+      svc = await getServiceByPrefix(prefix);
       if (!svc) return res.json([]);
-      where.idService = svc.idService;
+      // ⬇️ ver en atención conmigo aunque el servicio no coincida
+      where = applyServiceOrForced(where, svc.idService, idCashierQ, respect);
     }
 
     where = addForcedVisibilityClause(where, idCashierQ, respect);
@@ -351,12 +376,12 @@ exports.getTicketsByPrefix = async (req, res, next) => {
     const service = await getServiceByPrefix(prefix);
     if (!service) return res.status(404).json({ message: 'Servicio no encontrado.' });
 
-    let where = {
-      idService: service.idService,
-      status: true,
-      idTicketStatus: STATUS.PENDIENTE,
-    };
-    where = addForcedVisibilityClause(where, idCashierQ, respect);
+   let where = {
+  status: true,
+  idTicketStatus: STATUS.PENDIENTE,
+};
+where = applyServiceOrForced(where, service.idService, idCashierQ, respect);
+where = addForcedVisibilityClause(where, idCashierQ, respect);
 
     const tickets = await TicketRegistration.findAll({
       where,
@@ -600,14 +625,15 @@ exports.getPendingTickets = async (req, res) => {
   try {
     const { idCashier: idCashierRaw, respectForced, prefix } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = respectForced !== 'false';
+    const respect = respectForced !== 'false'; // ✅ default true
 
     let where = { idTicketStatus: parseInt(req.query.status || STATUS.PENDIENTE, 10) };
 
+    let svc = null;
     if (prefix) {
-      const svc = await getServiceByPrefix(prefix);
+      svc = await getServiceByPrefix(prefix);
       if (!svc) return res.json([]);
-      where.idService = svc.idService;
+      where = applyServiceOrForced(where, svc.idService, idCashierQ, respect);
     }
 
     where = addForcedVisibilityClause(where, idCashierQ, respect);
@@ -625,6 +651,7 @@ exports.getPendingTickets = async (req, res) => {
   }
 };
 
+
 exports.delete = async (req, res) => {
   try {
     const deleted = await TicketRegistration.destroy({
@@ -641,23 +668,21 @@ exports.findAllLive = async (req, res) => {
   try {
     const { prefix, statuses, idCashier: idCashierRaw, respectForced } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = respectForced !== 'false';
+    const respect = respectForced !== 'false'; // ✅ default true
 
     let ids = [STATUS.PENDIENTE, STATUS.EN_ATENCION];
     if (statuses) {
-      ids = String(statuses)
-        .split(',')
-        .map((s) => parseInt(s, 10))
-        .filter((n) => Number.isFinite(n));
+      ids = String(statuses).split(',').map((s) => parseInt(s, 10)).filter(Number.isFinite);
       if (ids.length === 0) ids = [STATUS.PENDIENTE, STATUS.EN_ATENCION];
     }
 
     let where = { status: true, idTicketStatus: { [Op.in]: ids } };
 
+    let svc = null;
     if (prefix) {
-      const svc = await getServiceByPrefix(prefix);
+      svc = await getServiceByPrefix(prefix);
       if (!svc) return res.json([]);
-      where.idService = svc.idService;
+      where = applyServiceOrForced(where, svc.idService, idCashierQ, respect);
     }
 
     where = addForcedVisibilityClause(where, idCashierQ, respect);
@@ -665,20 +690,14 @@ exports.findAllLive = async (req, res) => {
     const rows = await TicketRegistration.findAll({
       where,
       include: [{ model: Client }, { model: Service }],
-      order: [
-        ['turnNumber', 'ASC'],
-        ['createdAt', 'ASC'],
-      ],
+      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
     });
 
     const payload = rows.map((t) => toTicketPayload(t, t.Client, t.Service));
     return res.json(payload);
   } catch (err) {
     console.error('findAllLive error:', err);
-    return res.status(500).json({
-      error: 'SERVER_ERROR',
-      message: 'No se pudieron obtener tickets',
-    });
+    return res.status(500).json({ error: 'SERVER_ERROR', message: 'No se pudieron obtener tickets' });
   }
 };
 
