@@ -46,10 +46,8 @@ const isUniqueError = (err) => {
 
 /** Clausula de visibilidad por servicio respetando la “bandera” forcedToCashierId */
 const addForcedVisibilityClause = (baseWhere, idCashierQ, respectForced) => {
-  if (!respectForced) return baseWhere;
-  if (!idCashierQ) {
-    return { ...baseWhere, forcedToCashierId: null };
-  }
+ if (!respectForced) return baseWhere;
+if (!idCashierQ) return baseWhere;
   const orForced = { [Op.or]: [{ forcedToCashierId: null }, { forcedToCashierId: idCashierQ }] };
   return baseWhere[Op.and]
     ? { ...baseWhere, [Op.and]: [...baseWhere[Op.and], orForced] }
@@ -101,7 +99,7 @@ exports.findAll = async (req, res) => {
   try {
     const { prefix, idCashier: idCashierRaw, respectForced } = req.query;
     const idCashierQ = Number.isFinite(Number(idCashierRaw)) ? Number(idCashierRaw) : 0;
-    const respect = respectForced !== 'false';
+    const respect = String(respectForced).toLowerCase() === 'true';
 
     let where = { idTicketStatus: 1 };
 
@@ -552,7 +550,7 @@ exports.update = async (req, res) => {
         } else {
           io2.to(room).emit('ticket-assigned', assignedPayload);
         }
-      } else if (newStatus === 4) {
+      } else if (newStatus === 3) {
         const room = updatedTicket.Service.prefix.toLowerCase();
         io2.to(room).emit('ticket-completed', {
           ticket: payload,
@@ -560,7 +558,7 @@ exports.update = async (req, res) => {
           previousStatus: currentTicket.idTicketStatus,
           timestamp: Date.now(),
         });
-      } else if (newStatus === 3) {
+      } else if (newStatus === 4) {
         const room = updatedTicket.Service.prefix.toLowerCase();
         io2.to(room).emit('ticket-cancelled', {
           ticket: payload,
