@@ -18,18 +18,28 @@ const makeOptions = (cfg) => {
     pool: cfg.pool ?? { max: 15, min: 0, acquire: 30000, idle: 10000 },
   };
 
-  // ✅ Escribir SIEMPRE en UTC desde Sequelize (aplica en MySQL)
-  opts.timezone = "+00:00";
+  // ✅ GUARDAR en hora local Guatemala (-06:00)
+  // (Sequelize convertirá los Date JS a -06:00 al escribir en DATETIME/TIMESTAMP)
+  opts.timezone = "-06:00";
 
-  // ✅ Forzar UTC en el driver + leer DATETIME/TIMESTAMP como string (o cámbialo a Date si prefieres)
+  // ✅ Leer DATETIME/TIMESTAMP como string "YYYY-MM-DD HH:mm:ss" (sin cast a otra zona)
   opts.dialectOptions = {
     ...(cfg.dialectOptions || {}),
-    timezone: "Z", // UTC
     dateStrings: true,
     typeCast: function (field, next) {
-      // Lee DATETIME/TIMESTAMP como string plano "YYYY-MM-DD HH:mm:ss"
       if (field.type === "DATETIME" || field.type === "TIMESTAMP") return field.string();
       return next();
+    },
+  };
+
+  // ✅ Asegurar la zona horaria por SESIÓN en CADA conexión del pool
+  // (NOW(), CURDATE(), etc. devolverán hora local -06:00)
+  const basePool = opts.pool || {};
+  opts.pool = {
+    ...basePool,
+    afterCreate: (conn, done) => {
+      // mysql2
+      conn.query("SET time_zone = '-06:00';", (err) => done(err, conn));
     },
   };
 
@@ -60,15 +70,14 @@ if (process.env.DATABASE_URL) {
 }
 
 /**
- * ✅ Al iniciar, fijar time_zone de la SESIÓN MySQL en UTC.
- * Esto asegura que funciones como NOW()/CURDATE() se evalúen en UTC.
- * (Se ejecuta una sola vez; si falla, solo avisa por consola).
+ * (Opcional) Fijar time_zone de la PRIMERA conexión también a -06:00.
+ * El ajuste real y robusto es el de pool.afterCreate (arriba).
  */
 (async () => {
   try {
     await sequelize.authenticate();
-    await sequelize.query("SET time_zone = '+00:00'");
-    console.log("[db] session time_zone set to +00:00 (UTC)");
+    await sequelize.query("SET time_zone = '-06:00'");
+    console.log("[db] session time_zone set to -06:00 (America/Guatemala)");
   } catch (e) {
     console.warn("[db] could not SET time_zone:", e?.message || e);
   }
