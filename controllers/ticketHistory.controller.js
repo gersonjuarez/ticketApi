@@ -6,6 +6,17 @@ const { ApiError } = require("../middlewares/errorHandler");
 const { TicketHistory, TicketRegistration, User, Service } = db;
 
 /* ===========================
+   Estados (diccionario)
+   =========================== */
+const STATUS_NAMES = {
+  1: "Pendiente",
+  2: "En Atención",
+  3: "Completado",
+  4: "Cancelado",
+  5: "Traslado", // 👈 nuevo estado soportado
+};
+
+/* ===========================
    Helpers
    =========================== */
 const parseIntSafe = (v, dflt = null) => {
@@ -64,6 +75,7 @@ module.exports.list = async (req, res, next) => {
     if (userId !== null) where.changedByUser = userId;
     if (idTicket !== null) where.idTicket = idTicket;
 
+    // Soporta múltiples valores (incluye ahora el 5 = Traslado)
     if (req.query.fromStatus) {
       const arr = csvToIntArray(req.query.fromStatus);
       if (arr.length) where.fromStatus = arr.length > 1 ? { [Op.in]: arr } : arr[0];
@@ -162,6 +174,8 @@ module.exports.list = async (req, res, next) => {
     });
 
     // ------- Respuesta (interface FE) -------
+    // Nota: devolvemos los rows tal cual y además un diccionario de nombres de estado,
+    // incluyendo "Traslado" (5). Así no rompemos el contrato existente.
     return res.json({
       data: rows,
       pagination: {
@@ -182,6 +196,8 @@ module.exports.list = async (req, res, next) => {
         serviceId: serviceId ?? null,
         q: req.query.q || null,
       },
+      // 👇 útil para pintar etiquetas en UI sin hardcode
+      statusNames: STATUS_NAMES,
     });
   } catch (err) {
     req.log?.error("TicketHistory list error", {
