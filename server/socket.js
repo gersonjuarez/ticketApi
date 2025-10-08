@@ -409,8 +409,8 @@ module.exports = {
 
         socket.cashierInfo = { idCashier, prefix: room, idUser: idUser || null };
         console.log(`[socket] Cajero ${idCashier} (user: ${idUser}) registrado en servicio '${room}' con socket ${socket.id}`);
-        restoreCashierState(idCashier).catch(e => console.error('[socket] restoreCashierState:', e?.message || e));
 
+        restoreCashierState(idCashier, prefix) .catch(e => console.error('[socket] restoreCashierState:', e?.message || e));
         setTimeout(async () => {
           await module.exports.redistributeTickets(prefix);
           console.log(`[socket] Redistribución completada para cajero ${idCashier} en ${prefix}`);
@@ -900,8 +900,8 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
         for (const [socketId, cashierInfo] of serviceInfo.cashiers) {
           const socket = io.sockets.sockets.get(socketId);
           if (socket) {
-            const hasAssignedTicket = cashierCurrentDisplay.has(cashierInfo.idCashier);
-            if (!hasAssignedTicket) socket.emit('no-tickets-available', { timestamp: Date.now() });
+                      const hasDisplay = cashierCurrentDisplay.has(cashierInfo.idCashier);
+       if (!hasDisplay) socket.emit('no-tickets-available', { timestamp: Date.now() });
           }
         }
         return;
@@ -923,6 +923,7 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
       for (const [socketId, cashierInfo] of serviceInfo.cashiers) {
         const socket = io.sockets.sockets.get(socketId);
         if (socket && !busyCashiers.has(cashierInfo.idCashier)) {
+          if (cashierCurrentDisplay.has(cashierInfo.idCashier)) continue;
           availableCashiers.push({ socketId, idCashier: cashierInfo.idCashier });
         }
       }
@@ -937,7 +938,7 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
           const socket = io.sockets.sockets.get(cashier.socketId);
           if (!socket) return;
           if (busyCashiers.has(cashier.idCashier)) return;
-
+          if (cashierCurrentDisplay.has(cashier.idCashier)) return;
           cashierCurrentDisplay.set(cashier.idCashier, { currentTicket: ticketPayload, isAssigned: false });
           socket.emit('update-current-display', { ticket: ticketPayload, isAssigned: false, timestamp: Date.now() });
           console.log(`[socket] Cajero ${cashier.idCashier} ahora ve ticket ${nextTicket.correlativo} (no asignado)`);
@@ -994,7 +995,7 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
       for (const [socketId, info] of serviceInfo.cashiers) {
         if (excludeCashierId && info.idCashier === excludeCashierId) continue;
         if (busy.has(info.idCashier)) continue;
-
+        if (cashierCurrentDisplay.has(info.idCashier)) continue;
         const s = io.sockets.sockets.get(socketId);
         if (!s) continue;
 

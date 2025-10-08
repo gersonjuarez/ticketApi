@@ -665,8 +665,11 @@ exports.update = async (req, res) => {
             assignedPayload,
             newCashierId
           );
+           const io3 = require('../server/socket').getIo?.();
+           io3 && io3.to(`cashier:${newCashierId}`).emit('ticket-assigned', assignedPayload);
         } else {
           io2.to(room).emit('ticket-assigned', assignedPayload);
+            io2.to(`cashier:${newCashierId}`).emit('ticket-assigned', assignedPayload);
         }
       } else if (newStatus === STATUS.COMPLETADO) {
         const room = updatedTicket.Service.prefix.toLowerCase();
@@ -1050,6 +1053,12 @@ exports.transfer = async (req, res) => {
         } else {
           // Sigue mostrándose en la sala del servicio de origen si quieres mantenerlo ahí
           io3.to(originRoom).emit('new-ticket', { ...payload, idTicketStatus: STATUS.PENDIENTE, idCashier: null });
+        
+        io3.to(`cashier:${toCashier.idCashier}`).emit('update-current-display', {
+          ticket: { ...payload, idTicketStatus: STATUS.PENDIENTE, idCashier: null },
+          isAssigned: false,
+          timestamp: Date.now(),
+        });
         }
 
         io3.emit('ticket-updated', payload);
