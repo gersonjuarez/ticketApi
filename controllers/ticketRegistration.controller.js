@@ -16,6 +16,20 @@ const Attendance = require('../services/attendance.service');
 // Helpers nuevos (asegúrate de tener los archivos en utils/)
 const { getNextTurnNumber, padN } = require('../utils/turnNumbers');
 const { fmtGuatemalaYYYYMMDDHHmm } = require('../utils/time-tz');
+// Prioriza tickets reservados para el cajero dado (0 = mayor prioridad)
+const buildOrderForCashier = (cashierId = 0) => [
+  [
+    sequelize.literal(
+      `CASE WHEN "forcedToCashierId" = ${Number(cashierId) || 0} THEN 0 ELSE 1 END`
+    ),
+    'ASC',
+  ],
+  ['idTicketStatus', 'ASC'], // PENDIENTE(1) antes que EN_ATENCION(2) si se mezclan
+  ['updatedAt', 'ASC'],      // cambios recientes primero (transfer/reserve)
+  ['turnNumber', 'ASC'],
+  ['createdAt', 'ASC'],
+];
+
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
   if (!svcId) return baseWhere;
   if (respectForced && idCashierQ) {
@@ -147,7 +161,7 @@ exports.findAll = async (req, res) => {
     const tickets = await TicketRegistration.findAll({
       where,
       include: [{ model: Service }, { model: Client }],
-      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+      order: buildOrderForCashier(idCashierQ),
     });
 
     res.json(tickets.map((t) => toTicketPayload(t, t.Client, t.Service)));
@@ -155,6 +169,7 @@ exports.findAll = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
 
 
 exports.findAllDispatched = async (req, res) => {
@@ -178,13 +193,14 @@ exports.findAllDispatched = async (req, res) => {
     const tickets = await TicketRegistration.findAll({
       where,
       include: [{ model: Service }, { model: Client }],
-      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+      order: buildOrderForCashier(idCashierQ),
     });
     res.json(tickets.map((t) => toTicketPayload(t, t.Client, t.Service)));
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
+
 
 exports.findById = async (req, res) => {
   try {
@@ -376,16 +392,16 @@ exports.getTicketsByPrefix = async (req, res, next) => {
     const service = await getServiceByPrefix(prefix);
     if (!service) return res.status(404).json({ message: 'Servicio no encontrado.' });
 
-   let where = {
-  status: true,
-  idTicketStatus: STATUS.PENDIENTE,
-};
-where = applyServiceOrForced(where, service.idService, idCashierQ, respect);
-where = addForcedVisibilityClause(where, idCashierQ, respect);
+    let where = {
+      status: true,
+      idTicketStatus: STATUS.PENDIENTE,
+    };
+    where = applyServiceOrForced(where, service.idService, idCashierQ, respect);
+    where = addForcedVisibilityClause(where, idCashierQ, respect);
 
     const tickets = await TicketRegistration.findAll({
       where,
-      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+      order: buildOrderForCashier(idCashierQ),
     });
 
     const payload = tickets.map((t) => ({
@@ -404,6 +420,7 @@ where = addForcedVisibilityClause(where, idCashierQ, respect);
   }
 };
 
+
 exports.getTicketsForCashier = async (req, res) => {
   try {
     const { idCashier } = req.query;
@@ -412,16 +429,100 @@ exports.getTicketsForCashier = async (req, res) => {
       return res.status(400).json({ error: 'idCashier requerido' });
     }
 
-    const currentTicket = await TicketRegistration.findOne({
+    // 1) Intentar obtener el "current" si ya está en atención
+    let currentTicket = await TicketRegistration.findOne({
       where: { idTicketStatus: STATUS.EN_ATENCION, idCashier: cashierId, status: true },
       include: [{ model: Client }, { model: Service }],
       order: [['turnNumber', 'ASC']],
     });
 
+    // 2) Si NO hay current, auto-claim atómico del reservado (si existe)
+    if (!currentTicket) {
+      const t = await sequelize.transaction();
+      try {
+        // lock de verificación: ¿sigue libre?
+        const stillIdle = await TicketRegistration.findOne({
+          where: { idTicketStatus: STATUS.EN_ATENCION, idCashier: cashierId, status: true },
+          transaction: t,
+          lock: t.LOCK.UPDATE,
+        });
+
+        if (!stillIdle) {
+          // Buscar reservado para mí (pendiente)
+          const reserved = await TicketRegistration.findOne({
+            where: { status: true, idTicketStatus: STATUS.PENDIENTE, forcedToCashierId: cashierId },
+            include: [{ model: Client }, { model: Service }],
+            order: buildOrderForCashier(cashierId),
+            transaction: t,
+            lock: t.LOCK.UPDATE,
+          });
+
+          if (reserved) {
+            const now = new Date();
+
+            await reserved.update(
+              {
+                idTicketStatus: STATUS.EN_ATENCION,
+                idCashier: cashierId,
+                dispatchedByUser: req.query.changedByUser || 1,
+              },
+              { transaction: t }
+            );
+
+            await TicketHistory.create(
+              {
+                idTicket: reserved.idTicketRegistration,
+                fromStatus: STATUS.PENDIENTE,
+                toStatus: STATUS.EN_ATENCION,
+                changedByUser: req.query.changedByUser || 1,
+              },
+              { transaction: t }
+            );
+
+            await Attendance.rotateSpan(
+              {
+                idTicket: reserved.idTicketRegistration,
+                idCashier: cashierId,
+                idService: reserved.idService,
+                at: now,
+              },
+              t
+            );
+
+            await t.commit();
+            currentTicket = reserved;
+
+            // sockets opcionales
+            try {
+              const io = require('../server/socket').getIo?.();
+              if (io) {
+                const payload = toTicketPayload(reserved, reserved.Client, reserved.Service);
+                io.to(`cashier:${cashierId}`).emit('ticket-assigned', {
+                  ticket: payload,
+                  assignedToCashier: cashierId,
+                  previousStatus: STATUS.PENDIENTE,
+                  timestamp: Date.now(),
+                  attentionStartedAt: now,
+                });
+                io.emit('ticket-updated', payload);
+              }
+            } catch {}
+          } else {
+            await t.rollback();
+          }
+        } else {
+          await t.rollback();
+        }
+      } catch (e) {
+        try { if (t && t.finished !== 'commit') await t.rollback(); } catch {}
+      }
+    }
+
+    // 3) Cola (solo los reservados para esta ventanilla), ordenada con prioridad
     const queueTickets = await TicketRegistration.findAll({
       where: { idTicketStatus: STATUS.PENDIENTE, status: true, forcedToCashierId: cashierId },
       include: [{ model: Client }, { model: Service }],
-      order: [['turnNumber', 'ASC']],
+      order: buildOrderForCashier(cashierId),
     });
 
     const response = {
@@ -443,6 +544,7 @@ exports.getTicketsForCashier = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
 
 exports.update = async (req, res) => {
   const t = await sequelize.transaction();
@@ -641,7 +743,7 @@ exports.getPendingTickets = async (req, res) => {
     const tickets = await TicketRegistration.findAll({
       where,
       include: [{ model: Client }, { model: Service }],
-      order: [['createdAt', 'ASC']],
+      order: buildOrderForCashier(idCashierQ),
     });
 
     res.json(tickets.map((t) => toTicketPayload(t)));
@@ -650,6 +752,7 @@ exports.getPendingTickets = async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 };
+
 
 
 exports.delete = async (req, res) => {
@@ -690,7 +793,7 @@ exports.findAllLive = async (req, res) => {
     const rows = await TicketRegistration.findAll({
       where,
       include: [{ model: Client }, { model: Service }],
-      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+      order: buildOrderForCashier(idCashierQ),
     });
 
     const payload = rows.map((t) => toTicketPayload(t, t.Client, t.Service));
@@ -700,6 +803,7 @@ exports.findAllLive = async (req, res) => {
     return res.status(500).json({ error: 'SERVER_ERROR', message: 'No se pudieron obtener tickets' });
   }
 };
+
 
 /* ============================
    TRANSFERIR TICKET

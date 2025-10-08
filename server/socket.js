@@ -673,28 +673,94 @@ module.exports = {
   notifyTicketChange: async (prefix, actionType, ticket, assignedToCashier = null) => {
     try {
       if (!io) throw new Error('io no inicializado');
-      const room = prefix.toLowerCase();
+
+      // ⚠️ Cuando hay asignación/traslado, forzamos servicio del cajero destino
+      let targetPrefix = prefix;
+      let enrichedTicket = ticket;
+
+      if (actionType === 'assigned' && assignedToCashier != null) {
+        const { Cashier, Service } = require('../models');
+
+        // Obtenemos el servicio del cajero destino
+        const cashier = await Cashier.findByPk(assignedToCashier, {
+          attributes: ['idCashier', 'idService'],
+          include: [{ model: Service, attributes: ['idService', 'prefix'] }],
+        });
+
+        if (cashier) {
+          const srvId = Number(cashier.idService);
+          const srvPrefix =
+            (cashier.Service && cashier.Service.prefix) ? String(cashier.Service.prefix) : targetPrefix;
+
+          // Forzamos idService al del destino en el payload
+          enrichedTicket = {
+            ...ticket,
+            idService: srvId,
+          };
+
+          // El room a notificar debe ser el del servicio DESTINO
+          targetPrefix = srvPrefix;
+        }
+      }
+
+      const room = String(targetPrefix || prefix || '').toLowerCase();
 
       if (actionType === 'assigned') {
-        cashierCurrentDisplay.set(assignedToCashier, { currentTicket: ticket, isAssigned: true });
-          // ⬅️ Asegura que el cajero lo reciba aunque no esté suscrito al room de ese prefix
-  emitToCashierDirect(assignedToCashier, 'ticket-assigned', {
-    ticket, assignedToCashier, timestamp: Date.now(),
-  });
-        io.to(room).emit('ticket-assigned', { ticket, assignedToCashier, timestamp: Date.now() });
-        console.log(`[socket] Ticket ${ticket.correlativo} asignado a cajero ${assignedToCashier}`);
+        // Mantén el estado actual del cajero
+        cashierCurrentDisplay.set(assignedToCashier, { currentTicket: enrichedTicket, isAssigned: true });
+
+        // 📣 Aseguramos que el cajero destino lo reciba aunque no esté suscrito al room de ese prefix
+        emitToCashierDirect(assignedToCashier, 'ticket-assigned', {
+          ticket: enrichedTicket,
+          assignedToCashier,
+          timestamp: Date.now(),
+        });
+
+        // 📣 Emite a cajeros del servicio DESTINO
+        io.to(room).emit('ticket-assigned', {
+          ticket: enrichedTicket,
+          assignedToCashier,
+          timestamp: Date.now(),
+        });
+
+        // 📺 Emite también a TVs (la TV escucha 'ticket-assigned')
+        io.to('tv').emit('ticket-assigned', {
+          ticket: enrichedTicket,
+          assignedToCashier,
+          timestamp: Date.now(),
+        });
+
+        console.log(`[socket] Ticket ${enrichedTicket.correlativo} asignado a cajero ${assignedToCashier} (room:${room})`);
+
         // No redistribuir aquí: mantener focus para demás cajeros
+
       } else if (actionType === 'completed') {
         cashierCurrentDisplay.delete(assignedToCashier);
-        io.to(room).emit('ticket-completed', { ticket, completedByCashier: assignedToCashier, timestamp: Date.now() });
-        console.log(`[socket] Ticket ${ticket.correlativo} completado por cajero ${assignedToCashier}`);
-        // 👉 Al completar, empujar el siguiente SOLO a ese cajero
-        await pickNextForCashier(prefix, assignedToCashier);
+
+        // 📣 Notifica al servicio (usa el prefix que venga/permanezca)
+        io.to(room).emit('ticket-completed', {
+          ticket: enrichedTicket,
+          completedByCashier: assignedToCashier,
+          timestamp: Date.now(),
+        });
+
+        // 📺 Notifica a TVs para que retiren el ticket
+        io.to('tv').emit('ticket-completed', {
+          ticket: enrichedTicket,
+          completedByCashier: assignedToCashier,
+          timestamp: Date.now(),
+        });
+
+        console.log(`[socket] Ticket ${enrichedTicket.correlativo} completado por cajero ${assignedToCashier} (room:${room})`);
+
+        // 👉 Al completar, empuja el siguiente SOLO a ese cajero, usando el prefix (servicio actual)
+        await pickNextForCashier(targetPrefix, assignedToCashier);
       }
     } catch (e) {
       console.error('[socket:notifyTicketChange] error:', e?.message || e);
     }
   },
+
 
   redistributeTickets: async (prefix) => {
     try {
