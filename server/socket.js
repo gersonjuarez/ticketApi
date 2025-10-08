@@ -153,9 +153,9 @@ function emitToCashierDirect(idCashier, event, payload) {
 }
 
 /**
- * Empuja al cajero su "siguiente" ticket:
- * 1) primero pendiente forzado a ese cajero
- * 2) si no hay, primero pendiente sin forzar
+ * Empuja al cajero su "siguiente" ticket dentro del servicio:
+ * ahora se elige SIEMPRE el menor turnNumber entre:
+ *  - pendientes forzados a ese cajero  OR  pendientes libres del servicio
  */
 async function pickNextForCashier(prefix, idCashier) {
   try {
@@ -163,31 +163,20 @@ async function pickNextForCashier(prefix, idCashier) {
     const serviceId = await getServiceIdByPrefix(prefix);
     if (!serviceId || !idCashier) return;
 
-    const { TicketRegistration } = require('../models');
+    const { TicketRegistration, Op } = require('../models');
 
-    // 1) Ticket forzado a este cajero
-    let next = await TicketRegistration.findOne({
+    const next = await TicketRegistration.findOne({
       where: {
         idTicketStatus: 1,
         idService: serviceId,
         status: true,
-        forcedToCashierId: idCashier,
+        [Op.or]: [
+          { forcedToCashierId: idCashier },
+          { forcedToCashierId: null },
+        ],
       },
       order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
     });
-
-    // 2) Si no hay forzado, uno libre
-    if (!next) {
-      next = await TicketRegistration.findOne({
-        where: {
-          idTicketStatus: 1,
-          idService: serviceId,
-          status: true,
-          forcedToCashierId: null,
-        },
-        order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
-      });
-    }
 
     if (!next) {
       cashierCurrentDisplay.delete(idCashier);
@@ -197,7 +186,6 @@ async function pickNextForCashier(prefix, idCashier) {
     }
 
     const payload = toDisplayPayload(prefix, next);
-
     cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
     emitToCashierDirect(idCashier, 'update-current-display', {
       ticket: payload,
