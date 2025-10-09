@@ -27,11 +27,11 @@ async function restoreCashierState(idCashier, preferPrefix = null) {
     const { TicketRegistration, Service, sequelize } = require('../models');
 
     // 1) En atención conmigo
-    const assigned = await TicketRegistration.findOne({
-      where: { idTicketStatus: 2, idCashier: idCashier, status: true },
-      include: [{ model: Service, attributes: ['prefix'] }],
-      order: [['updatedAt', 'DESC']],
-    });
+   const assigned = await TicketRegistration.findOne({
+  where: { idTicketStatus: 2, idCashier: idCashier, status: true },
+  include: [{ model: Service, attributes: ['prefix'] }],
+  order: [['turnNumber', 'ASC']], // ⬅️ preferible a updatedAt
+});
     if (assigned) {
       const payload = toDisplayPayload(assigned.Service?.prefix, assigned);
       cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: true });
@@ -154,16 +154,19 @@ function emitToCashierDirect(idCashier, event, payload) {
 
 /**
  * Empuja al cajero su "siguiente" ticket dentro del servicio:
- * ahora se elige SIEMPRE el menor turnNumber entre:
+ * elige SIEMPRE el menor turnNumber entre:
  *  - pendientes forzados a ese cajero  OR  pendientes libres del servicio
  */
 async function pickNextForCashier(prefix, idCashier) {
   try {
     if (!io) throw new Error('io no inicializado');
-    const serviceId = await getServiceIdByPrefix(prefix);
+
+    const prefixLower = String(prefix || '').toLowerCase(); // ⬅️ normaliza aquí
+    const serviceId = await getServiceIdByPrefix(prefixLower);
     if (!serviceId || !idCashier) return;
 
-    const { TicketRegistration, Op } = require('../models');
+    const { TicketRegistration } = require('../models');
+    const { Op } = require('sequelize'); // ⬅️ usa Op desde sequelize (no desde models)
 
     const next = await TicketRegistration.findOne({
       where: {
@@ -175,17 +178,17 @@ async function pickNextForCashier(prefix, idCashier) {
           { forcedToCashierId: null },
         ],
       },
-      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']], // FIFO real
     });
 
     if (!next) {
       cashierCurrentDisplay.delete(idCashier);
       emitToCashierDirect(idCashier, 'no-tickets-available', { timestamp: Date.now() });
-      console.log(`[socket:pickNextForCashier] Sin siguiente para cajero ${idCashier} en ${prefix}`);
+      console.log(`[socket:pickNextForCashier] Sin siguiente para cajero ${idCashier} en ${prefixLower}`);
       return;
     }
 
-    const payload = toDisplayPayload(prefix, next);
+    const payload = toDisplayPayload(prefixLower, next);
     cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
     emitToCashierDirect(idCashier, 'update-current-display', {
       ticket: payload,
@@ -193,9 +196,7 @@ async function pickNextForCashier(prefix, idCashier) {
       timestamp: Date.now(),
     });
 
-    console.log(
-      `[socket:pickNextForCashier] Enviado ${next.correlativo} a cajero ${idCashier} (${prefix})`
-    );
+    console.log(`[socket:pickNextForCashier] Enviado ${next.correlativo} a cajero ${idCashier} (${prefixLower})`);
   } catch (e) {
     console.error('[socket:pickNextForCashier] error:', e?.message || e);
   }
@@ -399,10 +400,10 @@ module.exports = {
         console.log(`[socket] Cajero ${idCashier} (user: ${idUser}) registrado en servicio '${room}' con socket ${socket.id}`);
 
         restoreCashierState(idCashier, prefix) .catch(e => console.error('[socket] restoreCashierState:', e?.message || e));
-        setTimeout(async () => {
-          await module.exports.redistributeTickets(prefix);
-          console.log(`[socket] Redistribución completada para cajero ${idCashier} en ${prefix}`);
-        }, 500);
+      setTimeout(async () => {
+  await module.exports.redistributeTickets(room); // ⬅️ usa room (minúsculas), NO prefix crudo
+  console.log(`[socket] Redistribución completada para cajero ${idCashier} en ${room}`);
+}, 500);
       });
 
       // --- Join genérico
@@ -532,9 +533,9 @@ module.exports = {
           if (serviceQueues.has(prefix)) {
             serviceQueues.get(prefix).cashiers.delete(socket.id);
             console.log(`[socket] Cajero ${idCashier} removido del servicio '${prefix}'`);
-            setTimeout(() => {
-              module.exports.redistributeTickets(prefix.toUpperCase());
-            }, 1000);
+         setTimeout(() => {
+  module.exports.redistributeTickets(prefix); // ⬅️ ya viene en minúsculas desde cashierInfo
+}, 1000);
           }
           cashierCurrentDisplay.delete(idCashier);
         }
@@ -800,7 +801,8 @@ notifyTicketChange: async (prefix, actionType, ticket, assignedToCashier = null)
       console.log(`[socket] Ticket ${enrichedTicket.correlativo} completed by cashier ${assignedToCashier} (room:${room})`);
 
       // Empuja el siguiente SOLO a ese cajero, usando el servicio actual
-      await pickNextForCashier(targetPrefix, assignedToCashier);
+      const room = String(targetPrefix || prefix || '').toLowerCase(); // ya lo calculas arriba
+await pickNextForCashier(room, assignedToCashier); // ⬅️ pásalo en minúsculas
     }
   } catch (e) {
     console.error('[socket:notifyTicketChange] error:', e?.message || e);
