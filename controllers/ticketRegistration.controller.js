@@ -683,67 +683,72 @@ exports.update = async (req, res) => {
       include: [{ model: Client }, { model: Service }],
     });
 
-    const io2 = require("../server/socket").getIo?.();
-    const payload = toTicketPayload(
-      updatedTicket,
-      updatedTicket.Client,
-      updatedTicket.Service
-    );
+const io2 = require("../server/socket").getIo?.();
+const payload = toTicketPayload(
+  updatedTicket,
+  updatedTicket.Client,
+  updatedTicket.Service
+);
 
-    if (io2) {
-      if (
-        newStatus === STATUS.EN_ATENCION &&
-        currentTicket.idTicketStatus === STATUS.PENDIENTE
-      ) {
-        const socketModule = require("../server/socket");
-        const room = updatedTicket.Service.prefix.toLowerCase();
+if (io2) {
+  if (
+    newStatus === STATUS.EN_ATENCION &&
+    currentTicket.idTicketStatus === STATUS.PENDIENTE
+  ) {
+    const socketModule = require("../server/socket");
+    const room = updatedTicket.Service.prefix.toLowerCase();
 
-        const assignedPayload = {
-          ticket: payload,
-          assignedToCashier: newCashierId,
-          previousStatus: currentTicket.idTicketStatus,
-          timestamp: Date.now(),
-          attentionStartedAt,
-        };
+    const assignedPayload = {
+      ticket: payload,
+      assignedToCashier: newCashierId,
+      previousStatus: currentTicket.idTicketStatus,
+      timestamp: Date.now(),
+      attentionStartedAt,
+    };
 
-        if (socketModule.emitToAvailableCashiers) {
-          await socketModule.emitToAvailableCashiers(
-            updatedTicket.Service.prefix,
-            "ticket-assigned",
-            assignedPayload,
-            newCashierId
-          );
-          const io3 = require("../server/socket").getIo?.();
-          io3 &&
-            io3
-              .to(`cashier:${newCashierId}`)
-              .emit("ticket-assigned", assignedPayload);
-        } else {
-          io2.to(room).emit("ticket-assigned", assignedPayload);
-          io2
-            .to(`cashier:${newCashierId}`)
-            .emit("ticket-assigned", assignedPayload);
-        }
-      } else if (newStatus === STATUS.COMPLETADO) {
-        const room = updatedTicket.Service.prefix.toLowerCase();
-        io2.to(room).emit("ticket-completed", {
-          ticket: payload,
-          completedByCashier: currentTicket.idCashier,
-          previousStatus: currentTicket.idTicketStatus,
-          timestamp: Date.now(),
-        });
-      } else if (newStatus === STATUS.CANCELADO) {
-        const room = updatedTicket.Service.prefix.toLowerCase();
-        io2.to(room).emit("ticket-cancelled", {
-          ticket: payload,
-          cancelledByCashier: currentTicket.idCashier,
-          previousStatus: currentTicket.idTicketStatus,
-          timestamp: Date.now(),
-        });
-      }
-
-      io2.emit("ticket-updated", payload);
+    if (socketModule.emitToAvailableCashiers) {
+      await socketModule.emitToAvailableCashiers(
+        updatedTicket.Service.prefix,
+        "ticket-assigned",
+        assignedPayload,
+        newCashierId
+      );
+      const io3 = require("../server/socket").getIo?.();
+      io3 && io3.to(`cashier:${newCashierId}`).emit("ticket-assigned", assignedPayload);
+    } else {
+      io2.to(room).emit("ticket-assigned", assignedPayload);
+      io2.to(`cashier:${newCashierId}`).emit("ticket-assigned", assignedPayload);
     }
+
+    // ✅ también a la TV
+    io2.to("tv").emit("ticket-assigned", assignedPayload);
+
+  } else if (newStatus === STATUS.COMPLETADO) {
+    const room = updatedTicket.Service.prefix.toLowerCase();
+    const completedPayload = {
+      ticket: payload,
+      completedByCashier: currentTicket.idCashier,
+      previousStatus: currentTicket.idTicketStatus,
+      timestamp: Date.now(),
+    };
+    io2.to(room).emit("ticket-completed", completedPayload);
+    io2.to("tv").emit("ticket-completed", completedPayload); // ✅
+
+  } else if (newStatus === STATUS.CANCELADO) {
+    const room = updatedTicket.Service.prefix.toLowerCase();
+    const cancelledPayload = {
+      ticket: payload,
+      cancelledByCashier: currentTicket.idCashier,
+      previousStatus: currentTicket.idTicketStatus,
+      timestamp: Date.now(),
+    };
+    io2.to(room).emit("ticket-cancelled", cancelledPayload);
+    io2.to("tv").emit("ticket-cancelled", cancelledPayload); // ✅
+  }
+
+  // Mantén este broadcast global (lo escucha tu TV también si ya lo usas)
+  io2.emit("ticket-updated", payload);
+}
 
     try {
       const socketModule = require("../server/socket");
@@ -1135,79 +1140,74 @@ exports.transfer = async (req, res) => {
       await t.commit();
 
       // -------- Sockets --------
-      const io3 = require("../server/socket").getIo?.();
-      if (io3) {
-        const originPrefix = (ticket.Service?.prefix || "").toUpperCase();
-        const originRoom = originPrefix.toLowerCase();
+   const io3 = require("../server/socket").getIo?.();
+if (io3) {
+  const originPrefix = (ticket.Service?.prefix || "").toUpperCase();
+  const originRoom = originPrefix.toLowerCase();
 
-        let usuarioName = "Sin cliente";
-        try {
-          const cli = await Client.findByPk(ticket.idClient);
-          if (cli && cli.name) usuarioName = cli.name;
-        } catch {}
+  let usuarioName = "Sin cliente";
+  try {
+    const cli = await Client.findByPk(ticket.idClient);
+    if (cli && cli.name) usuarioName = cli.name;
+  } catch {}
 
-        const payload = {
-          idTicketRegistration: ticket.idTicketRegistration,
-          turnNumber: ticket.turnNumber,
-          correlativo: ticket.correlativo,
-          prefix: originPrefix,
-          idService: ticket.idService,
-          idTicketStatus: newStatus,
-          idCashier: assignedNow ? toCashier.idCashier : null,
-          forcedToCashierId: toCashier.idCashier,
-          updatedAt: ticket.updatedAt,
-          usuario: usuarioName,
-          modulo: ticket.Service?.name || "—",
-        };
+  const payload = {
+    idTicketRegistration: ticket.idTicketRegistration,
+    turnNumber: ticket.turnNumber,
+    correlativo: ticket.correlativo,
+    prefix: originPrefix,
+    idService: ticket.idService,
+    idTicketStatus: newStatus,
+    idCashier: assignedNow ? toCashier.idCashier : null,
+    forcedToCashierId: toCashier.idCashier,
+    updatedAt: ticket.updatedAt,
+    usuario: usuarioName,
+    modulo: ticket.Service?.name || "—",
+  };
 
-        io3.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
-          ticket: payload,
-          fromCashierId: fromCashierId || null,
-          toCashierId: toCashier.idCashier,
-          queued: !assignedNow,
-          timestamp: Date.now(),
-        });
-        io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-transferred", {
-          ticket: payload,
-          fromCashierId: fromCashierId || null,
-          toCashierId: toCashier.idCashier,
-          queued: !assignedNow,
-          timestamp: Date.now(),
-        });
+  const transferred = {
+    ticket: payload,
+    fromCashierId: fromCashierId || null,
+    toCashierId: toCashier.idCashier,
+    queued: !assignedNow,
+    timestamp: Date.now(),
+  };
 
-        if (assignedNow) {
-          io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-assigned", {
-            ticket: payload,
-            assignedToCashier: toCashier.idCashier,
-            previousStatus: STATUS.TRASLADO,
-            timestamp: Date.now(),
-            attentionStartedAt: null,
-          });
-        } else {
-          // Sigue mostrándose en la sala del servicio de origen si quieres mantenerlo ahí
-          io3
-            .to(originRoom)
-            .emit("new-ticket", {
-              ...payload,
-              idTicketStatus: STATUS.PENDIENTE,
-              idCashier: null,
-            });
+  // Cajeros
+  io3.to(`cashier:${fromCashierId}`).emit("ticket-transferred", transferred);
+  io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-transferred", transferred);
+  // ✅ TV también
+  io3.to("tv").emit("ticket-transferred", transferred);
 
-          io3
-            .to(`cashier:${toCashier.idCashier}`)
-            .emit("update-current-display", {
-              ticket: {
-                ...payload,
-                idTicketStatus: STATUS.PENDIENTE,
-                idCashier: null,
-              },
-              isAssigned: false,
-              timestamp: Date.now(),
-            });
-        }
+  if (assignedNow) {
+    const assignedPayload = {
+      ticket: payload,
+      assignedToCashier: toCashier.idCashier,
+      previousStatus: STATUS.TRASLADO,
+      timestamp: Date.now(),
+      attentionStartedAt: null,
+    };
+    io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-assigned", assignedPayload);
+    io3.to("tv").emit("ticket-assigned", assignedPayload); // ✅
+  } else {
+    // Mantener visible en origen como pendiente, si así lo quieres
+    const queuedPayload = {
+      ...payload,
+      idTicketStatus: STATUS.PENDIENTE,
+      idCashier: null,
+    };
+    io3.to(originRoom).emit("new-ticket", queuedPayload);
+    io3.to(`cashier:${toCashier.idCashier}`).emit("update-current-display", {
+      ticket: queuedPayload,
+      isAssigned: false,
+      timestamp: Date.now(),
+    });
+    // (opcional) También podrías informar a la TV que reapareció en cola en su servicio de origen:
+    io3.to("tv").emit("new-ticket", queuedPayload); // ✅ opcional, útil si tu TV escucha este evento
+  }
 
-        io3.emit("ticket-updated", payload);
-      }
+  io3.emit("ticket-updated", payload);
+}
 
       // Liberar y tomar siguiente en origen
       try {
@@ -1361,90 +1361,104 @@ exports.transfer = async (req, res) => {
       attentionStartedAt = openSpan ? openSpan.startedAt : null;
     }
 
-    const io3 = require("../server/socket").getIo?.();
-    if (io3) {
-      const destRoom = destPrefix.toLowerCase();
+const io3 = require("../server/socket").getIo?.();
+if (io3) {
+  const destRoom = destPrefix.toLowerCase();
 
-      let usuarioName = "Sin cliente";
-      try {
-        const cli = await Client.findByPk(ticket.idClient);
-        if (cli && cli.name) usuarioName = cli.name;
-      } catch {}
+  let usuarioName = "Sin cliente";
+  try {
+    const cli = await Client.findByPk(ticket.idClient);
+    if (cli && cli.name) usuarioName = cli.name;
+  } catch {}
 
-      const payload = {
-        idTicketRegistration: ticket.idTicketRegistration,
-        turnNumber: nextTurn,
-        correlativo: nextCorrelativo,
-        prefix: destPrefix,
-        idService: destServiceId,
-        idTicketStatus: newStatus,
-        idCashier: assignedNow ? toCashier.idCashier : null,
-        forcedToCashierId: toCashier.idCashier,
-        updatedAt: ticket.updatedAt,
-        usuario: usuarioName,
-        modulo: toCashier.Service?.name || "—",
-      };
+  const payload = {
+    idTicketRegistration: ticket.idTicketRegistration,
+    turnNumber: nextTurn,
+    correlativo: nextCorrelativo,
+    prefix: destPrefix,
+    idService: destServiceId,
+    idTicketStatus: newStatus,
+    idCashier: assignedNow ? toCashier.idCashier : null,
+    forcedToCashierId: toCashier.idCashier,
+    updatedAt: ticket.updatedAt,
+    usuario: usuarioName,
+    modulo: toCashier.Service?.name || "—",
+  };
 
-      if (originPrefix) {
-        io3.to(originPrefix.toLowerCase()).emit("ticket-removed", {
-          idTicketRegistration: ticket.idTicketRegistration,
-          correlativo: nextCorrelativo,
-          fromService: originPrefix,
-          timestamp: Date.now(),
-        });
-      }
+  if (originPrefix) {
+    io3.to(originPrefix.toLowerCase()).emit("ticket-removed", {
+      idTicketRegistration: ticket.idTicketRegistration,
+      correlativo: nextCorrelativo,
+      fromService: originPrefix,
+      timestamp: Date.now(),
+    });
+    // (opcional) infórmalo en TV también si la TV reacciona a 'ticket-removed'
+    io3.to("tv").emit("ticket-removed", {
+      idTicketRegistration: ticket.idTicketRegistration,
+      correlativo: nextCorrelativo,
+      fromService: originPrefix,
+      timestamp: Date.now(),
+    });
+  }
 
-      io3.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
-        ticket: payload,
-        fromCashierId: fromCashierId || null,
-        toCashierId: toCashier.idCashier,
-        queued: !assignedNow,
-        timestamp: Date.now(),
-      });
-      io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-transferred", {
-        ticket: payload,
-        fromCashierId: fromCashierId || null,
-        toCashierId: toCashier.idCashier,
-        queued: !assignedNow,
-        timestamp: Date.now(),
-      });
+  const transferred = {
+    ticket: payload,
+    fromCashierId: fromCashierId || null,
+    toCashierId: toCashier.idCashier,
+    queued: !assignedNow,
+    timestamp: Date.now(),
+  };
 
-      if (assignedNow) {
-        io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-assigned", {
-          ticket: payload,
-          assignedToCashier: toCashier.idCashier,
-          previousStatus: STATUS.TRASLADO,
-          timestamp: Date.now(),
-          attentionStartedAt,
-        });
-        io3.to(destRoom).emit("ticket-removed", {
-          idTicketRegistration: ticket.idTicketRegistration,
-          correlativo: nextCorrelativo,
-          fromService: destPrefix,
-          timestamp: Date.now(),
-        });
-      } else {
-        const queuedPayload = {
-          ...payload,
-          idTicketStatus: STATUS.PENDIENTE,
-          idCashier: null,
-        };
-        io3.to(destRoom).emit("new-ticket", queuedPayload);
-        io3
-          .to(`cashier:${toCashier.idCashier}`)
-          .emit("new-ticket", queuedPayload);
-        io3
-          .to(`cashier:${toCashier.idCashier}`)
-          .emit("update-current-display", {
-            ticket: queuedPayload,
-            isAssigned: false,
-            timestamp: Date.now(),
-          });
-      }
+  // Cajeros
+  io3.to(`cashier:${fromCashierId}`).emit("ticket-transferred", transferred);
+  io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-transferred", transferred);
+  // ✅ TV también
+  io3.to("tv").emit("ticket-transferred", transferred);
 
-      io3.emit("ticket-updated", payload);
-    }
+  if (assignedNow) {
+    const assignedPayload = {
+      ticket: payload,
+      assignedToCashier: toCashier.idCashier,
+      previousStatus: STATUS.TRASLADO,
+      timestamp: Date.now(),
+      attentionStartedAt,
+    };
+    io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-assigned", assignedPayload);
+    io3.to("tv").emit("ticket-assigned", assignedPayload); // ✅
 
+    // Si no quieres que se vea en cola en el destino, lo quitas del room del destino
+    io3.to(destRoom).emit("ticket-removed", {
+      idTicketRegistration: ticket.idTicketRegistration,
+      correlativo: nextCorrelativo,
+      fromService: destPrefix,
+      timestamp: Date.now(),
+    });
+    // (opcional) también en TV
+    io3.to("tv").emit("ticket-removed", {
+      idTicketRegistration: ticket.idTicketRegistration,
+      correlativo: nextCorrelativo,
+      fromService: destPrefix,
+      timestamp: Date.now(),
+    });
+  } else {
+    const queuedPayload = {
+      ...payload,
+      idTicketStatus: STATUS.PENDIENTE,
+      idCashier: null,
+    };
+    io3.to(destRoom).emit("new-ticket", queuedPayload);
+    io3.to(`cashier:${toCashier.idCashier}`).emit("new-ticket", queuedPayload);
+    io3.to(`cashier:${toCashier.idCashier}`).emit("update-current-display", {
+      ticket: queuedPayload,
+      isAssigned: false,
+      timestamp: Date.now(),
+    });
+    // ✅ TV también para que aparezca en “En cola” del servicio destino
+    io3.to("tv").emit("new-ticket", queuedPayload);
+  }
+
+  io3.emit("ticket-updated", payload);
+}
     try {
       const socketModule = require("../server/socket");
       if (
