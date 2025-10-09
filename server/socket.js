@@ -16,6 +16,22 @@ let isProcessingPrintQueue = false;
 /* ============================
    Utils
 ============================ */
+/** Obtiene el prefix del servicio al que pertenece un cajero (por idCashier) */
+async function getPrefixByCashierId(idCashier) {
+  if (!idCashier) return null;
+  try {
+    const { Cashier, Service } = require('../models');
+    const cashier = await Cashier.findByPk(idCashier, {
+      attributes: ['idCashier', 'idService'],
+      include: [{ model: Service, attributes: ['idService', 'prefix'] }],
+    });
+    const p = cashier?.Service?.prefix;
+    return p ? String(p).toUpperCase() : null;
+  } catch (e) {
+    console.warn('[socket:getPrefixByCashierId] error:', e?.message || e);
+    return null;
+  }
+}
 /** Al reconectar un cajero, restaurar su estado: EN_ATENCION o PENDIENTE forzado para él (cualquier servicio) */
 /** Al reconectar un cajero, restaurar su estado sin mutar nada:
  *  1) Si tiene EN_ATENCION → ese manda
@@ -766,23 +782,29 @@ notifyTicketChange: async (prefix, actionType, ticket, assignedToCashier = null)
     } else if (actionType === 'transferred') {
       // Para transferencias, esperamos que el controlador nos llame con from/to y queued.
       // Si llegaste aquí con 'transferred' y 'assignedToCashier', hacemos un broadcast básico:
-      io.to(room).emit('ticket-transferred', {
-        ticket: enrichedTicket,
-        fromCashierId: ticket.idCashier ?? null,
-        toCashierId: assignedToCashier,
-        queued: true, // por defecto; si tu controlador sabe si va a cola o en atención, usa el helper de abajo
-        timestamp: Date.now(),
-      });
-      io.to('tv').emit('ticket-transferred', {
-        ticket: enrichedTicket,
-        fromCashierId: ticket.idCashier ?? null,
-        toCashierId: assignedToCashier,
-        queued: true,
-        timestamp: Date.now(),
-      });
+   io.to(room).emit('ticket-transferred', {
+    ticket: enrichedTicket,
+    fromCashierId: ticket.idCashier ?? null,
+    toCashierId: assignedToCashier,
+    queued: true,
+    timestamp: Date.now(),
+  });
+  io.to('tv').emit('ticket-transferred', {
+    ticket: enrichedTicket,
+    fromCashierId: ticket.idCashier ?? null,
+    toCashierId: assignedToCashier,
+    queued: true,
+    timestamp: Date.now(),
+  });
 
-      console.log(`[socket] Ticket ${enrichedTicket.correlativo} transferred → to cashier ${assignedToCashier} (room:${room}, prefix:${enrichedTicket.prefix})`);
-
+  console.log(`[socket] Ticket ${enrichedTicket.correlativo} transferred → to cashier ${assignedToCashier} (room:${room}, prefix:${enrichedTicket.prefix})`);
+  const fromCashierId = ticket.idCashier ?? null;
+  if (fromCashierId) {
+    const originPrefix = await getPrefixByCashierId(fromCashierId);
+    if (originPrefix) {
+      await pickNextForCashier(originPrefix, fromCashierId);
+    }
+ }
     } else if (actionType === 'completed') {
       cashierCurrentDisplay.delete(assignedToCashier);
 
@@ -814,18 +836,18 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
     const { Cashier, Service } = require('../models');
 
     // Servicio destino por el cajero destino
-    const cashier = await Cashier.findByPk(toCashierId, {
+    const cashierTo = await Cashier.findByPk(toCashierId, {
       attributes: ['idCashier', 'idService'],
       include: [{ model: Service, attributes: ['idService', 'prefix'] }],
     });
 
-    // Enriquecer ticket con servicio destino
+    // Enriquecer ticket con servicio destino (lo que verá destino/TV)
     let enrichedTicket = { ...ticket };
     let destPrefix = ticket.prefix || '';
-    if (cashier) {
-      const srvId = Number(cashier.idService);
-      const srvPrefix = (cashier.Service && cashier.Service.prefix)
-        ? String(cashier.Service.prefix)
+    if (cashierTo) {
+      const srvId = Number(cashierTo.idService);
+      const srvPrefix = (cashierTo.Service && cashierTo.Service.prefix)
+        ? String(cashierTo.Service.prefix)
         : String(destPrefix || '');
       enrichedTicket.idService = srvId;
       enrichedTicket.prefix = srvPrefix.toUpperCase();
@@ -834,7 +856,7 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
 
     const room = String(destPrefix).toLowerCase();
 
-    // Broadcast a servicio destino y TV
+    // Broadcast a servicio DESTINO y TV
     io.to(room).emit('ticket-transferred', {
       ticket: enrichedTicket,
       fromCashierId,
@@ -851,10 +873,19 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
     });
 
     console.log(`[socket] ticket-transferred → ${enrichedTicket.correlativo} from:${fromCashierId} to:${toCashierId} queued:${queued} (prefix:${enrichedTicket.prefix}, room:${room})`);
+
+    // ⬅️ NUEVO: al cajero ORIGEN empújale su "siguiente" del servicio de origen
+    if (fromCashierId) {
+      const originPrefix = await getPrefixByCashierId(fromCashierId);
+      if (originPrefix) {
+        await pickNextForCashier(originPrefix, fromCashierId);
+      }
+    }
   } catch (e) {
     console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
   }
 },
+
 
   redistributeTickets: async (prefix) => {
     try {
