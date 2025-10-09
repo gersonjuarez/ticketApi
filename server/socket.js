@@ -805,27 +805,42 @@ notifyTicketChange: async (prefix, actionType, ticket, assignedToCashier = null)
       await pickNextForCashier(originPrefix, fromCashierId);
     }
  }
-    } else if (actionType === 'completed') {
-      cashierCurrentDisplay.delete(assignedToCashier);
+   } else if (actionType === 'completed') {
+  cashierCurrentDisplay.delete(assignedToCashier);
 
-      io.to(room).emit('ticket-completed', {
-        ticket: enrichedTicket,
-        completedByCashier: assignedToCashier,
-        timestamp: Date.now(),
-      });
+  io.to(room).emit('ticket-completed', {
+    ticket: enrichedTicket,
+    completedByCashier: assignedToCashier,
+    timestamp: Date.now(),
+  });
+  io.to('tv').emit('ticket-completed', {
+    ticket: enrichedTicket,
+    completedByCashier: assignedToCashier,
+    timestamp: Date.now(),
+  });
 
-      io.to('tv').emit('ticket-completed', {
-        ticket: enrichedTicket,
-        completedByCashier: assignedToCashier,
-        timestamp: Date.now(),
-      });
+  console.log(`[socket] Ticket ${enrichedTicket.correlativo} completed by cashier ${assignedToCashier} (room:${room})`);
 
-      console.log(`[socket] Ticket ${enrichedTicket.correlativo} completed by cashier ${assignedToCashier} (room:${room})`);
+  // ⬅️ usa la 'room' ya calculada
+  await pickNextForCashier(room, assignedToCashier);
+}else if (actionType === 'cancelled') {
+  cashierCurrentDisplay.delete(assignedToCashier);
 
-      // Empuja el siguiente SOLO a ese cajero, usando el servicio actual
-      const room = String(targetPrefix || prefix || '').toLowerCase(); // ya lo calculas arriba
-await pickNextForCashier(room, assignedToCashier); // ⬅️ pásalo en minúsculas
-    }
+  io.to(room).emit('ticket-cancelled', {
+    ticket: enrichedTicket,
+    cancelledByCashier: assignedToCashier,
+    timestamp: Date.now(),
+  });
+  io.to('tv').emit('ticket-cancelled', {
+    ticket: enrichedTicket,
+    cancelledByCashier: assignedToCashier,
+    timestamp: Date.now(),
+  });
+
+  console.log(`[socket] Ticket ${enrichedTicket.correlativo} cancelled by cashier ${assignedToCashier} (room:${room})`);
+
+  await pickNextForCashier(room, assignedToCashier);
+}
   } catch (e) {
     console.error('[socket:notifyTicketChange] error:', e?.message || e);
   }
@@ -985,15 +1000,22 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
 
       const { TicketRegistration } = require('../models');
 
-      const next = await TicketRegistration.findOne({
-        where: {
-          idTicketStatus: 1,
-          idService: serviceId,
-          status: true,
-          forcedToCashierId: null,
-        },
-        order: [['turnNumber', 'ASC']],
-      });
+   const next = await TicketRegistration.findOne({
+  where: {
+    idTicketStatus: 1,
+    idService: serviceId,
+    status: true,
+    [Op.or]: [
+      { forcedToCashierId: idCashier },
+      { forcedToCashierId: null },
+    ],
+  },
+  order: [
+    [sequelize.literal(`CASE WHEN "forcedToCashierId" = ${Number(idCashier)} THEN 0 ELSE 1 END`), 'ASC'],
+    ['turnNumber', 'ASC'],
+    ['createdAt', 'ASC'],
+  ],
+});
 
       if (!next) {
         console.log(`[socket] No hay siguiente ticket pendiente libre para broadcast en ${prefix}`);
