@@ -106,13 +106,13 @@ const addForcedVisibilityClause = (baseWhere, idCashierQ, respectForced) => {
     : { ...baseWhere, [Op.and]: [orForced] };
 };
 
-const toTicketPayload = (ticket, client = null, service = null) => ({
+const toTicketPayload = (ticket, client = null, service = null, overrides = {}) => ({
   idTicketRegistration: ticket.idTicketRegistration,
   turnNumber: ticket.turnNumber,
   correlativo: ticket.correlativo,
-  prefix: (service?.prefix ?? ticket.Service?.prefix) || undefined,
+  prefix: (overrides.prefix ?? service?.prefix ?? ticket.Service?.prefix) || undefined,
   usuario: (client?.name ?? ticket.Client?.name) || "Sin cliente",
-  modulo: (service?.name ?? ticket.Service?.name) || "—",
+  modulo: (overrides.modulo ?? (service?.name ?? ticket.Service?.name)) || "—",
   createdAt: ticket.createdAt,
   updatedAt: ticket.updatedAt,
   idTicketStatus: ticket.idTicketStatus,
@@ -1144,26 +1144,29 @@ exports.transfer = async (req, res) => {
 if (io3) {
   const originPrefix = (ticket.Service?.prefix || "").toUpperCase();
   const originRoom = originPrefix.toLowerCase();
-
+// ⚠️ Servicio de destino (visual para TV)
+const destPrefix = (toCashier.Service?.prefix || "").toUpperCase();
+const destModulo  = toCashier.Service?.name || "—";
   let usuarioName = "Sin cliente";
   try {
     const cli = await Client.findByPk(ticket.idClient);
     if (cli && cli.name) usuarioName = cli.name;
   } catch {}
 
-  const payload = {
-    idTicketRegistration: ticket.idTicketRegistration,
-    turnNumber: ticket.turnNumber,
-    correlativo: ticket.correlativo,
-    prefix: originPrefix,
-    idService: ticket.idService,
-    idTicketStatus: newStatus,
-    idCashier: assignedNow ? toCashier.idCashier : null,
-    forcedToCashierId: toCashier.idCashier,
-    updatedAt: ticket.updatedAt,
-    usuario: usuarioName,
-    modulo: ticket.Service?.name || "—",
-  };
+const payload = {
+  idTicketRegistration: ticket.idTicketRegistration,
+  turnNumber: ticket.turnNumber,         // ✅ mantiene numeración de origen
+  correlativo: ticket.correlativo,       // ✅ mantiene correlativo de origen
+  // 👇 Mostrar SIEMPRE destino en la UI (TV/cajeros), aunque idService siga siendo el de origen
+  prefix: destPrefix,                    // ✅ ahora muestra servicio de destino
+  modulo: destModulo,                    // ✅ nombre del servicio destino
+  idService: ticket.idService,           // ✅ NO tocar (trazabilidad)
+  idTicketStatus: newStatus,
+  idCashier: assignedNow ? toCashier.idCashier : null,
+  forcedToCashierId: toCashier.idCashier,
+  updatedAt: ticket.updatedAt,
+  usuario: usuarioName,
+};
 
   const transferred = {
     ticket: payload,
