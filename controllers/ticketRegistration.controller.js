@@ -1212,7 +1212,6 @@ exports.transfer = async (req, res) => {
       // Liberar y tomar siguiente en origen
       try {
         const socketModule = require("../server/socket");
-        const socketModule = require("../server/socket");
         if (fromCashierId) {
           const originPrefixLower = (
             ticket.Service?.prefix || ""
