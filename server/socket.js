@@ -164,31 +164,26 @@ function getActiveAnnouncerSocket() {
 
 function processTtsGlobalQueue() {
   if (!io) return;
-  if (!SERIALIZE_ALL_PREFIXES) return;       // no-op si no está en modo global
+  if (!SERIALIZE_ALL_PREFIXES) return;
   if (ttsGlobalProcessing) return;
   if (ttsGlobalQueue.length === 0) return;
 
-  // ¿Hay announcer?
   const haveAnnouncers =
     io.sockets.adapter.rooms.get('announcer') &&
     io.sockets.adapter.rooms.get('announcer').size > 0;
 
- if (!haveAnnouncers && FALLBACK_BROADCAST_WHEN_NO_ANNOUNCER) {
+  if (!haveAnnouncers && FALLBACK_BROADCAST_WHEN_NO_ANNOUNCER) {
     const head = ttsGlobalQueue.shift();
-    // ✅ SOLO UI silenciosa global (opcional), o mejor aún: envía al room del servicio si lo tienes
-    const pfxRoom = (head?.prefix || "default").toLowerCase();
-    io.to(pfxRoom).emit('call-ticket-ui', head?.raw || {});
-    // ❌ ya NO: io.to('tv').emit('call-ticket', head.raw || {})
-    setTimeout(() => processTtsGlobalQueue(), 10);
+    io.to('tv').emit('call-ticket', head.raw || {}); // solo UI legacy
+    // ⬇️ antes: 10ms; ahora: inmediato
+    setTimeout(() => processTtsGlobalQueue(), 0);
     return;
   }
-  if (!haveAnnouncers) return; // esperamos a que se conecte uno
+  if (!haveAnnouncers) return;
 
-  // Elegir announcer líder (si no hay aún)
   if (!activeAnnouncerId && !ALLOW_MULTIPLE_ANNOUNCERS) {
     const room = io.sockets.adapter.rooms.get('announcer');
     if (room && room.size > 0) {
-      // toma el primero como líder
       activeAnnouncerId = Array.from(room)[0];
       const leader = io.sockets.sockets.get(activeAnnouncerId);
       if (leader) {
@@ -202,7 +197,6 @@ function processTtsGlobalQueue() {
   ttsGlobalProcessing = true;
   const head = ttsGlobalQueue[0];
 
-  // Emitir el "tts-play" SOLO al líder (para evitar eco y solapamiento)
   if (leaderSocket && !ALLOW_MULTIPLE_ANNOUNCERS) {
     leaderSocket.emit('tts-play', {
       id: head.id,
@@ -213,7 +207,6 @@ function processTtsGlobalQueue() {
       moduleName: head.moduleName,
     });
   } else {
-    // Modo multi-announcer (no recomendado): todos reciben
     io.to('announcer').emit('tts-play', {
       id: head.id,
       prefix: head.prefix,
@@ -224,7 +217,8 @@ function processTtsGlobalQueue() {
     });
   }
 
-  const TIMEOUT_MS = 12000;
+  // ⬇️ antes: 12000; ahora: 8000 (o el valor que prefieras)
+  const TIMEOUT_MS = 8000;
   let finished = false;
 
   const onDone = (payload = {}) => {
@@ -234,7 +228,6 @@ function processTtsGlobalQueue() {
     finished = true;
     cleanup();
 
-    // sacar cabeza y seguir
     if (ttsGlobalQueue.length > 0 && String(ttsGlobalQueue[0].id) === String(head.id)) {
       ttsGlobalQueue.shift();
     }
@@ -261,6 +254,7 @@ function processTtsGlobalQueue() {
 
   io.once('tts-done', onDone);
 }
+
 
 /* ============================
    Utils
