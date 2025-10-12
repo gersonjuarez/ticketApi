@@ -12,7 +12,28 @@ const cashierCurrentDisplay = new Map(); // Map<idCashier, {currentTicket, isAss
 // Worker de impresión
 let printWorkerInterval = null;
 let isProcessingPrintQueue = false;
+// ============================
+//  TTS Global (serialización total)
+// ============================
+const SERIALIZE_ALL_PREFIXES = true;           // 🔴 Activa cola global (uno por uno)
+const ALLOW_MULTIPLE_ANNOUNCERS = false;       // 🔴 Solo un announcer activo
+let activeAnnouncerId = null;                  // socket.id del announcer líder
 
+const ttsGlobalQueue = [];     // [{ id, prefix, ttsText, numero, ventanilla, moduleName, raw }]
+let  ttsGlobalProcessing = false;
+
+// Helper: encolar item integrado
+function makeTtsItem(rawPayload = {}) {
+  return {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    prefix: svcKey(rawPayload?.prefix),
+    ttsText: String(rawPayload?.ttsText || ''),
+    numero: rawPayload?.numero || null,
+    ventanilla: rawPayload?.ventanilla || null,
+    moduleName: rawPayload?.moduleName || null,
+    raw: rawPayload,
+  };
+}
 /* ============================
    Cola TTS (Text-to-Speech) centralizada
 ============================ */
@@ -24,6 +45,20 @@ const FALLBACK_BROADCAST_WHEN_NO_ANNOUNCER = true; // si no hay TV, solo avisamo
 const svcKey = (p) => String(p || 'default').toLowerCase();
 
 function enqueueTtsCall(rawPayload = {}) {
+  // Modo global (serialización total)
+  if (SERIALIZE_ALL_PREFIXES) {
+    const item = makeTtsItem(rawPayload);
+    ttsGlobalQueue.push(item);
+
+    // Aviso opcional a monitores
+    if (io) {
+      io.to('announcer').emit('tts-queued', { globalSize: ttsGlobalQueue.length });
+    }
+    processTtsGlobalQueue();
+    return;
+  }
+
+  // === Modo antiguo por prefix (por si lo necesitas) ===
   const key = svcKey(rawPayload?.prefix);
   const item = {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
@@ -42,6 +77,7 @@ function enqueueTtsCall(rawPayload = {}) {
   if (io) io.to('announcer').emit('tts-queued', { prefix: key, size: q.length });
   processTtsQueue(key);
 }
+
 
 function processTtsQueue(prefix) {
   if (!io) return;
@@ -113,6 +149,109 @@ function processTtsQueue(prefix) {
     }
     ttsProcessing.set(key, false);
     setTimeout(() => processTtsQueue(key), 0);
+  }, TIMEOUT_MS);
+
+  io.once('tts-done', onDone);
+}
+function getActiveAnnouncerSocket() {
+  if (!io) return null;
+  if (ALLOW_MULTIPLE_ANNOUNCERS) return null; // se emitiría al room completo (no recomendado)
+  if (!activeAnnouncerId) return null;
+  return io.sockets.sockets.get(activeAnnouncerId) || null;
+}
+
+function processTtsGlobalQueue() {
+  if (!io) return;
+  if (!SERIALIZE_ALL_PREFIXES) return;       // no-op si no está en modo global
+  if (ttsGlobalProcessing) return;
+  if (ttsGlobalQueue.length === 0) return;
+
+  // ¿Hay announcer?
+  const haveAnnouncers =
+    io.sockets.adapter.rooms.get('announcer') &&
+    io.sockets.adapter.rooms.get('announcer').size > 0;
+
+  if (!haveAnnouncers && FALLBACK_BROADCAST_WHEN_NO_ANNOUNCER) {
+    const head = ttsGlobalQueue.shift();
+    io.to('tv').emit('call-ticket', head.raw || {}); // solo UI legacy
+    setTimeout(() => processTtsGlobalQueue(), 10);
+    return;
+  }
+  if (!haveAnnouncers) return; // esperamos a que se conecte uno
+
+  // Elegir announcer líder (si no hay aún)
+  if (!activeAnnouncerId && !ALLOW_MULTIPLE_ANNOUNCERS) {
+    const room = io.sockets.adapter.rooms.get('announcer');
+    if (room && room.size > 0) {
+      // toma el primero como líder
+      activeAnnouncerId = Array.from(room)[0];
+      const leader = io.sockets.sockets.get(activeAnnouncerId);
+      if (leader) {
+        leader.emit('announcer-leader', { leader: true });
+      }
+    }
+  }
+
+  const leaderSocket = getActiveAnnouncerSocket();
+
+  ttsGlobalProcessing = true;
+  const head = ttsGlobalQueue[0];
+
+  // Emitir el "tts-play" SOLO al líder (para evitar eco y solapamiento)
+  if (leaderSocket && !ALLOW_MULTIPLE_ANNOUNCERS) {
+    leaderSocket.emit('tts-play', {
+      id: head.id,
+      prefix: head.prefix,
+      ttsText: head.ttsText,
+      numero: head.numero,
+      ventanilla: head.ventanilla,
+      moduleName: head.moduleName,
+    });
+  } else {
+    // Modo multi-announcer (no recomendado): todos reciben
+    io.to('announcer').emit('tts-play', {
+      id: head.id,
+      prefix: head.prefix,
+      ttsText: head.ttsText,
+      numero: head.numero,
+      ventanilla: head.ventanilla,
+      moduleName: head.moduleName,
+    });
+  }
+
+  const TIMEOUT_MS = 12000;
+  let finished = false;
+
+  const onDone = (payload = {}) => {
+    if (finished) return;
+    if (String(payload.id) !== String(head.id)) return;
+
+    finished = true;
+    cleanup();
+
+    // sacar cabeza y seguir
+    if (ttsGlobalQueue.length > 0 && String(ttsGlobalQueue[0].id) === String(head.id)) {
+      ttsGlobalQueue.shift();
+    }
+    ttsGlobalProcessing = false;
+    setTimeout(() => processTtsGlobalQueue(), 0);
+  };
+
+  const cleanup = () => {
+    io.off('tts-done', onDone);
+    clearTimeout(timer);
+  };
+
+  const timer = setTimeout(() => {
+    if (finished) return;
+    finished = true;
+    cleanup();
+
+    if (ttsGlobalQueue.length > 0 && String(ttsGlobalQueue[0].id) === String(head.id)) {
+      ttsGlobalQueue.shift();
+    }
+    ttsGlobalProcessing = false;
+    setTimeout(() => processTtsGlobalQueue(), 0);
   }, TIMEOUT_MS);
 
   io.once('tts-done', onDone);
@@ -574,34 +713,52 @@ module.exports = {
       });
 
       // === Registrar TV como "anunciador" TTS ===
-      socket.on('register-announcer', () => {
-        socket.join('announcer');
-        announcerSockets.add(socket.id);
-        console.log(`[socket] ${socket.id} registrado como announcer (TV). Anunciadores activos: ${announcerSockets.size}`);
-        for (const key of ttsQueues.keys()) {
-          setTimeout(() => processTtsQueue(key), 20);
-        }
-      });
+   socket.on('register-announcer', () => {
+  socket.join('announcer');
+  announcerSockets.add(socket.id);
+  console.log(`[socket] ${socket.id} registrado como announcer (TV). Total: ${announcerSockets.size}`);
+
+  // Si no permitimos múltiples, define líder si no existe
+  if (!ALLOW_MULTIPLE_ANNOUNCERS) {
+    if (!activeAnnouncerId) {
+      activeAnnouncerId = socket.id;
+      socket.emit('announcer-leader', { leader: true });
+      console.log(`[socket] announcer líder: ${activeAnnouncerId}`);
+    } else {
+      socket.emit('announcer-leader', { leader: false });
+    }
+  }
+
+  // arranca el procesador (por si había cola)
+  if (SERIALIZE_ALL_PREFIXES) {
+    setTimeout(() => processTtsGlobalQueue(), 20);
+  } else {
+    for (const key of ttsQueues.keys()) {
+      setTimeout(() => processTtsQueue(key), 20);
+    }
+  }
+});
 
       // === Llamada de ticket → ENCOLAR para TTS (sin TTS en cajeros) ===
-      socket.on("call-ticket", (payload = {}) => {
-        try {
-          payload._fromSocketId = socket.id;
-          payload._fromCashierId = socket.cashierInfo?.idCashier ?? null;
+    socket.on("call-ticket", (payload = {}) => {
+  try {
+    payload._fromSocketId = socket.id;
+    payload._fromCashierId = socket.cashierInfo?.idCashier ?? null;
 
-          // Encola para TTS centralizado
-          enqueueTtsCall(payload);
+    // ✅ Encola a TTS global (o por prefix si apagas el modo global)
+    enqueueTtsCall(payload);
 
-          // Notificación UI legacy (sin TTS)
-          const room = typeof payload.prefix === "string" ? payload.prefix.toLowerCase() : null;
-          if (room) socket.to(room).emit("call-ticket", payload);
-          io.to("tv").emit("call-ticket", payload);
+    // UI legacy (sin voz)
+    const room = typeof payload.prefix === "string" ? payload.prefix.toLowerCase() : null;
+    if (room) socket.to(room).emit("call-ticket", payload);
+    io.to("tv").emit("call-ticket", payload);
 
-          console.log(`[socket] call-ticket encolado → prefix:${payload?.prefix} correlativo:${payload?.numero}`);
-        } catch (e) {
-          console.error("[socket] call-ticket handler error:", e?.message || e);
-        }
-      });
+    console.log(`[socket] call-ticket encolado → prefix:${payload?.prefix} correlativo:${payload?.numero}`);
+  } catch (e) {
+    console.error("[socket] call-ticket handler error:", e?.message || e);
+  }
+});
+
 
       // === Confirmación fin de TTS desde TV (libera la cola) ===
       socket.on('tts-done', (payload = {}) => {
@@ -620,10 +777,23 @@ module.exports = {
       socket.on("disconnect", (reason) => {
         console.log(`[socket] Cliente desconectado: ${socket.id}. Motivo: ${reason}`);
 
-        if (announcerSockets.has(socket.id)) {
-          announcerSockets.delete(socket.id);
-          console.log(`[socket] announcer removido: ${socket.id}. Activos: ${announcerSockets.size}`);
-        }
+    if (announcerSockets.has(socket.id)) {
+  announcerSockets.delete(socket.id);
+  if (activeAnnouncerId === socket.id) {
+    activeAnnouncerId = null;
+    // promueve nuevo líder si hay
+    if (!ALLOW_MULTIPLE_ANNOUNCERS) {
+      const room = io.sockets.adapter.rooms.get('announcer');
+      if (room && room.size > 0) {
+        activeAnnouncerId = Array.from(room)[0];
+        const leader = io.sockets.sockets.get(activeAnnouncerId);
+        if (leader) leader.emit('announcer-leader', { leader: true });
+        console.log(`[socket] announcer líder cambiado a: ${activeAnnouncerId}`);
+      }
+    }
+  }
+  console.log(`[socket] announcer removido: ${socket.id}. Activos: ${announcerSockets.size}`);
+}
 
         if (socket.cashierInfo) {
           const { idCashier, prefix } = socket.cashierInfo;
