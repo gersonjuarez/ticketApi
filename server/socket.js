@@ -94,7 +94,9 @@ function processTtsQueue(prefix) {
   if (!haveAnnouncers && FALLBACK_BROADCAST_WHEN_NO_ANNOUNCER) {
     const head = q.shift();
     ttsQueues.set(key, q);
-    io.to('tv').emit('call-ticket', head.raw || {}); // solo UI legacy
+    // ✅ SOLO UI silenciosa al room del servicio
+    io.to(key).emit('call-ticket-ui', head?.raw || {});
+    // ❌ ya NO: io.to('tv').emit('call-ticket', head.raw || {})
     setTimeout(() => processTtsQueue(key), 10);
     return;
   }
@@ -171,9 +173,12 @@ function processTtsGlobalQueue() {
     io.sockets.adapter.rooms.get('announcer') &&
     io.sockets.adapter.rooms.get('announcer').size > 0;
 
-  if (!haveAnnouncers && FALLBACK_BROADCAST_WHEN_NO_ANNOUNCER) {
+ if (!haveAnnouncers && FALLBACK_BROADCAST_WHEN_NO_ANNOUNCER) {
     const head = ttsGlobalQueue.shift();
-    io.to('tv').emit('call-ticket', head.raw || {}); // solo UI legacy
+    // ✅ SOLO UI silenciosa global (opcional), o mejor aún: envía al room del servicio si lo tienes
+    const pfxRoom = (head?.prefix || "default").toLowerCase();
+    io.to(pfxRoom).emit('call-ticket-ui', head?.raw || {});
+    // ❌ ya NO: io.to('tv').emit('call-ticket', head.raw || {})
     setTimeout(() => processTtsGlobalQueue(), 10);
     return;
   }
@@ -740,7 +745,8 @@ module.exports = {
 });
 
       // === Llamada de ticket → ENCOLAR para TTS (sin TTS en cajeros) ===
-    socket.on("call-ticket", (payload = {}) => {
+// === Llamada de ticket → ENCOLAR para TTS (sin TTS en cajeros/TVs) ===
+socket.on("call-ticket", (payload = {}) => {
   try {
     payload._fromSocketId = socket.id;
     payload._fromCashierId = socket.cashierInfo?.idCashier ?? null;
@@ -748,16 +754,19 @@ module.exports = {
     // ✅ Encola a TTS global (o por prefix si apagas el modo global)
     enqueueTtsCall(payload);
 
-    // UI legacy (sin voz)
+    // ✅ UI “silenciosa”: SOLO al room del servicio (nada de audio)
     const room = typeof payload.prefix === "string" ? payload.prefix.toLowerCase() : null;
-    if (room) socket.to(room).emit("call-ticket", payload);
-    io.to("tv").emit("call-ticket", payload);
+    if (room) {
+      io.to(room).emit("call-ticket-ui", payload); // ← evento nuevo solo visual
+    }
 
+    // ❌ Importante: NO más io.to("tv").emit("call-ticket", …) aquí
     console.log(`[socket] call-ticket encolado → prefix:${payload?.prefix} correlativo:${payload?.numero}`);
   } catch (e) {
     console.error("[socket] call-ticket handler error:", e?.message || e);
   }
 });
+
 
 
       // === Confirmación fin de TTS desde TV (libera la cola) ===
