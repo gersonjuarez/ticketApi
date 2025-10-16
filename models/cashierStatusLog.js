@@ -36,10 +36,11 @@ module.exports = (sequelize, DataTypes) => {
         allowNull: false,
         type: DataTypes.ENUM("PAUSE", "OUT_OF_SERVICE"),
       },
-      comment: {
-        allowNull: false,
-        type: DataTypes.STRING(500),
-      },
+    comment: {
+  allowNull: true,            // <- antes: false
+  type: DataTypes.STRING(500),
+  defaultValue: null,         // opcional, para claridad
+},
       // inicio/fin del intervalo
       startedAt: {
         allowNull: false,

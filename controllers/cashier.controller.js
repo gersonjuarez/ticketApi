@@ -403,20 +403,19 @@ exports.getStatusHistory = async (req, res, next) => {
 };
 
 // POST /cashiers/:id/pause  { comment, performedByUserId }
+
 exports.pause = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
     const idCashier = parseId(req.params.id);
     const { comment, performedByUserId } = req.body;
 
-    if (!comment || !comment.trim()) {
-      await t.rollback();
-      throw new ApiError('El comentario es obligatorio', 400);
-    }
     if (!performedByUserId) {
       await t.rollback();
       throw new ApiError('performedByUserId es obligatorio', 400);
     }
+
+    const normalizedComment = (comment ?? '').toString().trim() || null;
 
     const cashier = await Cashier.findByPk(idCashier, { transaction: t, lock: t.LOCK.UPDATE });
     if (!cashier) {
@@ -442,7 +441,7 @@ exports.pause = async (req, res, next) => {
     await Cashier.update(
       {
         isPaused: true,
-        lastStateComment: comment.trim(),
+        lastStateComment: normalizedComment, // <- permite null
         lastStateAt: new Date(),
       },
       { where: { idCashier }, transaction: t }
@@ -452,7 +451,7 @@ exports.pause = async (req, res, next) => {
       {
         idCashier,
         statusType: 'PAUSE',
-        comment: comment.trim(),
+        comment: normalizedComment, // <- permite null
         startedAt: new Date(),
         endedAt: null,
         performedByUserId,
@@ -471,21 +470,20 @@ exports.pause = async (req, res, next) => {
   }
 };
 
-// POST /cashiers/:id/out-of-service  { comment, performedByUserId }
+
+// POST /cashiers/:id/out-of-service  { comment?, performedByUserId }
 exports.outOfService = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
     const idCashier = parseId(req.params.id);
     const { comment, performedByUserId } = req.body;
 
-    if (!comment || !comment.trim()) {
-      await t.rollback();
-      throw new ApiError('El comentario es obligatorio', 400);
-    }
     if (!performedByUserId) {
       await t.rollback();
       throw new ApiError('performedByUserId es obligatorio', 400);
     }
+
+    const normalizedComment = (comment ?? '').toString().trim() || null;
 
     const cashier = await Cashier.findByPk(idCashier, { transaction: t, lock: t.LOCK.UPDATE });
     if (!cashier) {
@@ -521,7 +519,7 @@ exports.outOfService = async (req, res, next) => {
     await Cashier.update(
       {
         isOutOfService: true,
-        lastStateComment: comment.trim(),
+        lastStateComment: normalizedComment, // <- permite null
         lastStateAt: new Date(),
       },
       { where: { idCashier }, transaction: t }
@@ -531,7 +529,7 @@ exports.outOfService = async (req, res, next) => {
       {
         idCashier,
         statusType: 'OUT_OF_SERVICE',
-        comment: comment.trim(),
+        comment: normalizedComment, // <- permite null
         startedAt: new Date(),
         endedAt: null,
         performedByUserId,
@@ -550,21 +548,20 @@ exports.outOfService = async (req, res, next) => {
   }
 };
 
-// POST /cashiers/:id/resume  { comment, performedByUserId }
+
+// POST /cashiers/:id/resume  { comment?, performedByUserId }
 exports.resume = async (req, res, next) => {
   const t = await sequelize.transaction();
   try {
     const idCashier = parseId(req.params.id);
     const { comment, performedByUserId } = req.body;
 
-    if (!comment || !comment.trim()) {
-      await t.rollback();
-      throw new ApiError('El comentario es obligatorio', 400);
-    }
     if (!performedByUserId) {
       await t.rollback();
       throw new ApiError('performedByUserId es obligatorio', 400);
     }
+
+    const normalizedComment = (comment ?? '').toString().trim() || null;
 
     const cashier = await Cashier.findByPk(idCashier, { transaction: t, lock: t.LOCK.UPDATE });
     if (!cashier) {
@@ -595,7 +592,7 @@ exports.resume = async (req, res, next) => {
       {
         isPaused: false,
         isOutOfService: false,
-        lastStateComment: comment.trim(), // comentario de reanudación
+        lastStateComment: normalizedComment, // <- permite null
         lastStateAt: new Date(),
       },
       { where: { idCashier }, transaction: t }
@@ -610,3 +607,4 @@ exports.resume = async (req, res, next) => {
     return next(error);
   }
 };
+
