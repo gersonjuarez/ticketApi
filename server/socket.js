@@ -3,7 +3,9 @@ const { Server } = require('socket.io');
 const { Op } = require('sequelize');
 
 let io;
-
+// === Unicidad de sesión/ventanilla ===
+const userActiveSocket = new Map();    // Map<idUser, socketId>
+const cashierActiveSocket = new Map(); // Map<idCashier, socketId>
 // Estados en memoria (negocio de cajeros)
 const cashierTickets = new Map();        // Map<prefix_idCashier, {...}>
 const serviceQueues = new Map();         // Map<room, {cashiers: Map<socketId, {idCashier, currentTicket, idUser}>}>
@@ -617,206 +619,238 @@ module.exports = {
       ...opts,
     });
 
-    io.on('connection', (socket) => {
-      console.log('[socket] Cliente conectado:', socket.id);
+  io.on('connection', (socket) => {
+  console.log('[socket] Cliente conectado:', socket.id);
 
-      // --- Registro de usuario general
-      socket.on('register-user', ({ idUser, username, fullName }) => {
-        if (!idUser) {
-          console.warn(`[socket] register-user inválido desde ${socket.id}:`, { idUser, username, fullName });
-          return;
-        }
-        socket.userInfo = { idUser, username, fullName };
-        socket.join(`user-${idUser}`);
-        console.log(`[socket] Usuario ${idUser} (${username}) registrado en socket ${socket.id} y room 'user-${idUser}'`);
-      });
-
-      // --- Registro del cajero en un servicio
-      socket.on('register-cashier', ({ idCashier, prefix, idUser }) => {
-        if (!idCashier || !prefix || typeof prefix !== 'string') {
-          console.warn(`[socket] register-cashier inválido desde ${socket.id}:`, { idCashier, prefix, idUser });
-          return;
-        }
-
-        const room = prefix.toLowerCase();
-        socket.join(room);
-        socket.join(`cashier:${idCashier}`);
-
-        if (!serviceQueues.has(room)) {
-          serviceQueues.set(room, { cashiers: new Map() });
-        }
-        serviceQueues.get(room).cashiers.set(socket.id, {
-          idCashier,
-          currentTicket: null,
-          idUser: idUser || null
-        });
-
-        socket.cashierInfo = { idCashier, prefix: room, idUser: idUser || null };
-        console.log(`[socket] Cajero ${idCashier} (user: ${idUser}) registrado en servicio '${room}' con socket ${socket.id}`);
-
-        restoreCashierState(idCashier, prefix).catch(e => console.error('[socket] restoreCashierState:', e?.message || e));
-        setTimeout(async () => {
-          await module.exports.redistributeTickets(room);
-          console.log(`[socket] Redistribución completada para cajero ${idCashier} en ${room}`);
-        }, 500);
-      });
-
-      // --- Join genérico
-      socket.on("join", (room) => {
-        if (!room || typeof room !== "string") {
-          console.warn(`[socket] join inválido desde ${socket.id}:`, room);
-          return;
-        }
-        socket.join(room);
-        console.log(`[socket] ${socket.id} se unió al room '${room}'`);
-      });
-
-      // --- Bridge de impresión
-      socket.on("register-bridge", async ({ locationId }) => {
-        if (!locationId || typeof locationId !== "string") {
-          console.warn(`[socket] register-bridge inválido:`, locationId);
-          return;
-        }
-        const room = `bridge:${locationId}`;
-        socket.join(room);
-        console.log(`[socket] Bridge ${socket.id} registrado en room '${room}'`);
-
-        try {
-          const { PrintOutbox } = require('../models');
-          const cutoff = new Date(Date.now() - 10_000);
-          await PrintOutbox.update(
-            { status: 'pending' },
-            { where: { status: 'sent', location_id: locationId, updatedAt: { [Op.lt]: cutoff } } }
-          );
-        } catch (e) {
-          console.warn('[socket] requeue sent-on-bridge-register error:', e?.message || e);
-        }
-        setTimeout(() => processPrintQueueBatch(io, 15), 200);
-      });
-
-      // --- Suscripciones para pantallas
-      socket.on("subscribe-prefix", ({ prefix }) => {
-        if (!prefix || typeof prefix !== "string") {
-          console.warn(`[socket] subscribe-prefix inválido:`, prefix);
-          return;
-        }
-        const room = prefix.toLowerCase();
-        socket.join(room);
-        console.log(`[socket] ${socket.id} suscrito a room prefix '${room}'`);
-      });
-
-      socket.on("subscribe-tv", () => {
-        socket.join("tv");
-        socket.emit("subscribed-tv", { ok: true, room: "tv" });
-        console.log(`[socket] ${socket.id} suscrito al room global 'tv'`);
-      });
-
-      // === Registrar TV como "anunciador" TTS ===
-   socket.on('register-announcer', () => {
-  socket.join('announcer');
-  announcerSockets.add(socket.id);
-  console.log(`[socket] ${socket.id} registrado como announcer (TV). Total: ${announcerSockets.size}`);
-
-  // Si no permitimos múltiples, define líder si no existe
-  if (!ALLOW_MULTIPLE_ANNOUNCERS) {
-    if (!activeAnnouncerId) {
-      activeAnnouncerId = socket.id;
-      socket.emit('announcer-leader', { leader: true });
-      console.log(`[socket] announcer líder: ${activeAnnouncerId}`);
-    } else {
-      socket.emit('announcer-leader', { leader: false });
-    }
-  }
-
-  // arranca el procesador (por si había cola)
-  if (SERIALIZE_ALL_PREFIXES) {
-    setTimeout(() => processTtsGlobalQueue(), 20);
-  } else {
-    for (const key of ttsQueues.keys()) {
-      setTimeout(() => processTtsQueue(key), 20);
-    }
-  }
-});
-
-      // === Llamada de ticket → ENCOLAR para TTS (sin TTS en cajeros) ===
-// === Llamada de ticket → ENCOLAR para TTS (sin TTS en cajeros/TVs) ===
-socket.on("call-ticket", (payload = {}) => {
-  try {
-    payload._fromSocketId = socket.id;
-    payload._fromCashierId = socket.cashierInfo?.idCashier ?? null;
-
-    // ✅ Encola a TTS global (o por prefix si apagas el modo global)
-    enqueueTtsCall(payload);
-
-    // ✅ UI “silenciosa”: SOLO al room del servicio (nada de audio)
-    const room = typeof payload.prefix === "string" ? payload.prefix.toLowerCase() : null;
-    if (room) {
-      io.to(room).emit("call-ticket-ui", payload); // ← evento nuevo solo visual
+  // --- Registro de usuario general (único por usuario)
+  socket.on('register-user', ({ idUser, username, fullName }) => {
+    if (!idUser) {
+      console.warn(`[socket] register-user inválido desde ${socket.id}:`, { idUser, username, fullName });
+      return;
     }
 
-    // ❌ Importante: NO más io.to("tv").emit("call-ticket", …) aquí
-    console.log(`[socket] call-ticket encolado → prefix:${payload?.prefix} correlativo:${payload?.numero}`);
-  } catch (e) {
-    console.error("[socket] call-ticket handler error:", e?.message || e);
-  }
-});
-
-
-
-      // === Confirmación fin de TTS desde TV (libera la cola) ===
-      socket.on('tts-done', (payload = {}) => {
-        try {
-          io.emit('tts-done', payload); // el processor con .once lo capturará
-        } catch (e) {
-          console.error('[socket] tts-done handler error:', e?.message || e);
-        }
-      });
-
-      // --- Debug ping
-      socket.on("ping-check", () => {
-        socket.emit("pong-check", { at: Date.now() });
-      });
-
-      socket.on("disconnect", (reason) => {
-        console.log(`[socket] Cliente desconectado: ${socket.id}. Motivo: ${reason}`);
-
-    if (announcerSockets.has(socket.id)) {
-  announcerSockets.delete(socket.id);
-  if (activeAnnouncerId === socket.id) {
-    activeAnnouncerId = null;
-    // promueve nuevo líder si hay
-    if (!ALLOW_MULTIPLE_ANNOUNCERS) {
-      const room = io.sockets.adapter.rooms.get('announcer');
-      if (room && room.size > 0) {
-        activeAnnouncerId = Array.from(room)[0];
-        const leader = io.sockets.sockets.get(activeAnnouncerId);
-        if (leader) leader.emit('announcer-leader', { leader: true });
-        console.log(`[socket] announcer líder cambiado a: ${activeAnnouncerId}`);
+    // ⇨ Cierra cualquier sesión previa de este usuario
+    const prev = userActiveSocket.get(idUser);
+    if (prev && prev !== socket.id) {
+      const s = io.sockets.sockets.get(prev);
+      if (s) {
+        s.emit('session-revoked', { reason: 'Sesión iniciada en otro dispositivo' });
+        setTimeout(() => s.disconnect(true), 500);
       }
     }
-  }
-  console.log(`[socket] announcer removido: ${socket.id}. Activos: ${announcerSockets.size}`);
-}
+    userActiveSocket.set(idUser, socket.id);
 
-        if (socket.cashierInfo) {
-          const { idCashier, prefix } = socket.cashierInfo;
-          if (serviceQueues.has(prefix)) {
-            serviceQueues.get(prefix).cashiers.delete(socket.id);
-            console.log(`[socket] Cajero ${idCashier} removido del servicio '${prefix}'`);
-            setTimeout(() => {
-              module.exports.redistributeTickets(prefix);
-            }, 1000);
-          }
-          cashierCurrentDisplay.delete(idCashier);
+    socket.userInfo = { idUser, username, fullName };
+    socket.join(`user-${idUser}`);
+    console.log(`[socket] Usuario ${idUser} (${username}) registrado en socket ${socket.id} y room 'user-${idUser}'`);
+  });
+
+  // --- Registro del cajero en un servicio (único por ventanilla)
+  socket.on('register-cashier', ({ idCashier, prefix, idUser }) => {
+    if (!idCashier || !prefix || typeof prefix !== 'string') {
+      console.warn(`[socket] register-cashier inválido desde ${socket.id}:`, { idCashier, prefix, idUser });
+      return;
+    }
+
+    // ⇨ Exclusivo por ventanilla: un solo socket controlándola
+    const prevSock = cashierActiveSocket.get(idCashier);
+    if (prevSock && prevSock !== socket.id) {
+      const s = io.sockets.sockets.get(prevSock);
+      if (s) {
+        s.emit('cashier-taken', { reason: 'Esta ventanilla fue abierta en otra máquina' });
+        setTimeout(() => s.disconnect(true), 500);
+      }
+    }
+    cashierActiveSocket.set(idCashier, socket.id);
+
+    // ⇨ Opcional: fuerza unicidad también por usuario (si vino)
+    if (idUser) {
+      const prevUserSock = userActiveSocket.get(idUser);
+      if (prevUserSock && prevUserSock !== socket.id) {
+        const s = io.sockets.sockets.get(prevUserSock);
+        if (s) {
+          s.emit('session-revoked', { reason: 'Sesión iniciada en otra máquina' });
+          setTimeout(() => s.disconnect(true), 500);
         }
-        for (const [key, value] of cashierTickets.entries()) {
-          if (value.socketId === socket.id) {
-            cashierTickets.delete(key);
-            console.log(`[socket] Ticket ${key} liberado del cajero desconectado`);
-          }
-        }
-      });
+      }
+      userActiveSocket.set(idUser, socket.id);
+    }
+
+    const room = prefix.toLowerCase();
+    socket.join(room);
+    socket.join(`cashier:${idCashier}`);
+
+    if (!serviceQueues.has(room)) {
+      serviceQueues.set(room, { cashiers: new Map() });
+    }
+    serviceQueues.get(room).cashiers.set(socket.id, {
+      idCashier,
+      currentTicket: null,
+      idUser: idUser || null,
     });
+
+    socket.cashierInfo = { idCashier, prefix: room, idUser: idUser || null };
+    console.log(`[socket] Cajero ${idCashier} (user: ${idUser}) registrado en servicio '${room}' con socket ${socket.id}`);
+
+    restoreCashierState(idCashier, prefix).catch(e => console.error('[socket] restoreCashierState:', e?.message || e));
+    setTimeout(async () => {
+      await module.exports.redistributeTickets(room);
+      console.log(`[socket] Redistribución completada para cajero ${idCashier} en ${room}`);
+    }, 500);
+  });
+
+  // --- Join genérico
+  socket.on("join", (room) => {
+    if (!room || typeof room !== "string") {
+      console.warn(`[socket] join inválido desde ${socket.id}:`, room);
+      return;
+    }
+    socket.join(room);
+    console.log(`[socket] ${socket.id} se unió al room '${room}'`);
+  });
+
+  // --- Bridge de impresión
+  socket.on("register-bridge", async ({ locationId }) => {
+    if (!locationId || typeof locationId !== "string") {
+      console.warn(`[socket] register-bridge inválido:`, locationId);
+      return;
+    }
+    const room = `bridge:${locationId}`;
+    socket.join(room);
+    console.log(`[socket] Bridge ${socket.id} registrado en room '${room}'`);
+
+    try {
+      const { PrintOutbox } = require('../models');
+      const cutoff = new Date(Date.now() - 10_000);
+      await PrintOutbox.update(
+        { status: 'pending' },
+        { where: { status: 'sent', location_id: locationId, updatedAt: { [Op.lt]: cutoff } } }
+      );
+    } catch (e) {
+      console.warn('[socket] requeue sent-on-bridge-register error:', e?.message || e);
+    }
+    setTimeout(() => processPrintQueueBatch(io, 15), 200);
+  });
+
+  // --- Suscripciones para pantallas
+  socket.on("subscribe-prefix", ({ prefix }) => {
+    if (!prefix || typeof prefix !== "string") {
+      console.warn(`[socket] subscribe-prefix inválido:`, prefix);
+      return;
+    }
+    const room = prefix.toLowerCase();
+    socket.join(room);
+    console.log(`[socket] ${socket.id} suscrito a room prefix '${room}'`);
+  });
+
+  socket.on("subscribe-tv", () => {
+    socket.join("tv");
+    socket.emit("subscribed-tv", { ok: true, room: "tv" });
+    console.log(`[socket] ${socket.id} suscrito al room global 'tv'`);
+  });
+
+  // === Registrar TV como "anunciador" TTS ===
+  socket.on('register-announcer', () => {
+    socket.join('announcer');
+    announcerSockets.add(socket.id);
+    console.log(`[socket] ${socket.id} registrado como announcer (TV). Total: ${announcerSockets.size}`);
+
+    if (!ALLOW_MULTIPLE_ANNOUNCERS) {
+      if (!activeAnnouncerId) {
+        activeAnnouncerId = socket.id;
+        socket.emit('announcer-leader', { leader: true });
+        console.log(`[socket] announcer líder: ${activeAnnouncerId}`);
+      } else {
+        socket.emit('announcer-leader', { leader: false });
+      }
+    }
+
+    if (SERIALIZE_ALL_PREFIXES) {
+      setTimeout(() => processTtsGlobalQueue(), 20);
+    } else {
+      for (const key of ttsQueues.keys()) {
+        setTimeout(() => processTtsQueue(key), 20);
+      }
+    }
+  });
+
+  // === Llamada de ticket → encola TTS global y UI silenciosa por servicio ===
+  socket.on("call-ticket", (payload = {}) => {
+    try {
+      payload._fromSocketId = socket.id;
+      payload._fromCashierId = socket.cashierInfo?.idCashier ?? null;
+
+      enqueueTtsCall(payload);
+
+      const room = typeof payload.prefix === "string" ? payload.prefix.toLowerCase() : null;
+      if (room) {
+        io.to(room).emit("call-ticket-ui", payload);
+      }
+      console.log(`[socket] call-ticket encolado → prefix:${payload?.prefix} correlativo:${payload?.numero}`);
+    } catch (e) {
+      console.error("[socket] call-ticket handler error:", e?.message || e);
+    }
+  });
+
+  // === Confirmación fin de TTS desde TV (libera la cola) ===
+  socket.on('tts-done', (payload = {}) => {
+    try { io.emit('tts-done', payload); }
+    catch (e) { console.error('[socket] tts-done handler error:', e?.message || e); }
+  });
+
+  // --- Debug ping
+  socket.on("ping-check", () => {
+    socket.emit("pong-check", { at: Date.now() });
+  });
+
+  socket.on("disconnect", (reason) => {
+    console.log(`[socket] Cliente desconectado: ${socket.id}. Motivo: ${reason}`);
+
+    // Limpia líder/announcers
+    if (announcerSockets.has(socket.id)) {
+      announcerSockets.delete(socket.id);
+      if (activeAnnouncerId === socket.id) {
+        activeAnnouncerId = null;
+        if (!ALLOW_MULTIPLE_ANNOUNCERS) {
+          const room = io.sockets.adapter.rooms.get('announcer');
+          if (room && room.size > 0) {
+            activeAnnouncerId = Array.from(room)[0];
+            const leader = io.sockets.sockets.get(activeAnnouncerId);
+            if (leader) leader.emit('announcer-leader', { leader: true });
+            console.log(`[socket] announcer líder cambiado a: ${activeAnnouncerId}`);
+          }
+        }
+      }
+      console.log(`[socket] announcer removido: ${socket.id}. Activos: ${announcerSockets.size}`);
+    }
+
+    // Limpia unicidad por usuario
+    if (socket.userInfo?.idUser && userActiveSocket.get(socket.userInfo.idUser) === socket.id) {
+      userActiveSocket.delete(socket.userInfo.idUser);
+    }
+    // Limpia unicidad por ventanilla
+    if (socket.cashierInfo?.idCashier && cashierActiveSocket.get(socket.cashierInfo.idCashier) === socket.id) {
+      cashierActiveSocket.delete(socket.cashierInfo.idCashier);
+    }
+
+    if (socket.cashierInfo) {
+      const { idCashier, prefix } = socket.cashierInfo;
+      if (serviceQueues.has(prefix)) {
+        serviceQueues.get(prefix).cashiers.delete(socket.id);
+        console.log(`[socket] Cajero ${idCashier} removido del servicio '${prefix}'`);
+        setTimeout(() => { module.exports.redistributeTickets(prefix); }, 1000);
+      }
+      cashierCurrentDisplay.delete(idCashier);
+    }
+    for (const [key, value] of cashierTickets.entries()) {
+      if (value.socketId === socket.id) {
+        cashierTickets.delete(key);
+        console.log(`[socket] Ticket ${key} liberado del cajero desconectado`);
+      }
+    }
+  });
+});
+
 
     // Iniciar workers de impresión
     if (!printWorkerInterval) {

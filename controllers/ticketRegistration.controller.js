@@ -588,7 +588,9 @@ exports.update = async (req, res) => {
       return res.status(404).json({ error: "Ticket no encontrado" });
     }
 
+    // === Validaciones de reserva / carreras para EN_ATENCION ===
     if (idTicketStatus === STATUS.EN_ATENCION) {
+      // reservado a otro
       if (
         currentTicket.forcedToCashierId &&
         Number(currentTicket.forcedToCashierId) !== Number(idCashier)
@@ -600,6 +602,8 @@ exports.update = async (req, res) => {
           forcedToCashierId: currentTicket.forcedToCashierId,
         });
       }
+
+      // ya en atención por otro cajero
       if (
         currentTicket.idTicketStatus === STATUS.EN_ATENCION &&
         currentTicket.idCashier &&
@@ -610,6 +614,35 @@ exports.update = async (req, res) => {
           error: "Este ticket ya está siendo atendido por otro cajero",
           conflictTicket: currentTicket.correlativo,
           currentCashier: currentTicket.idCashier,
+        });
+      }
+
+      // 🔒 Bloquear fila del cajero y validar que no tenga otro ticket en atención
+      const cashierRow = await Cashier.findByPk(idCashier, {
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (!cashierRow || !cashierRow.status || cashierRow.isOutOfService) {
+        await t.rollback();
+        return res.status(409).json({ error: 'La ventanilla no está operativa' });
+      }
+
+      const concurrent = await TicketRegistration.findOne({
+        where: {
+          status: true,
+          idTicketStatus: STATUS.EN_ATENCION,
+          idCashier,
+          idTicketRegistration: { [Op.ne]: Number(ticketId) },
+        },
+        transaction: t,
+        lock: t.LOCK.UPDATE,
+      });
+      if (concurrent) {
+        await t.rollback();
+        return res.status(409).json({
+          error: 'CASHIER_BUSY',
+          message: 'Ya hay un ticket en atención en esta ventanilla.',
+          conflictTicket: concurrent.correlativo,
         });
       }
     }
@@ -683,72 +716,70 @@ exports.update = async (req, res) => {
       include: [{ model: Client }, { model: Service }],
     });
 
-const io2 = require("../server/socket").getIo?.();
-const payload = toTicketPayload(
-  updatedTicket,
-  updatedTicket.Client,
-  updatedTicket.Service
-);
+    const io2 = require("../server/socket").getIo?.();
+    const payload = toTicketPayload(
+      updatedTicket,
+      updatedTicket.Client,
+      updatedTicket.Service
+    );
 
-if (io2) {
-  if (
-    newStatus === STATUS.EN_ATENCION &&
-    currentTicket.idTicketStatus === STATUS.PENDIENTE
-  ) {
-    const socketModule = require("../server/socket");
-    const room = updatedTicket.Service.prefix.toLowerCase();
+    if (io2) {
+      if (
+        newStatus === STATUS.EN_ATENCION &&
+        currentTicket.idTicketStatus === STATUS.PENDIENTE
+      ) {
+        const socketModule = require("../server/socket");
+        const room = updatedTicket.Service.prefix.toLowerCase();
 
-    const assignedPayload = {
-      ticket: payload,
-      assignedToCashier: newCashierId,
-      previousStatus: currentTicket.idTicketStatus,
-      timestamp: Date.now(),
-      attentionStartedAt,
-    };
+        const assignedPayload = {
+          ticket: payload,
+          assignedToCashier: newCashierId,
+          previousStatus: currentTicket.idTicketStatus,
+          timestamp: Date.now(),
+          attentionStartedAt,
+        };
 
-    if (socketModule.emitToAvailableCashiers) {
-      await socketModule.emitToAvailableCashiers(
-        updatedTicket.Service.prefix,
-        "ticket-assigned",
-        assignedPayload,
-        newCashierId
-      );
-      const io3 = require("../server/socket").getIo?.();
-      io3 && io3.to(`cashier:${newCashierId}`).emit("ticket-assigned", assignedPayload);
-    } else {
-      io2.to(room).emit("ticket-assigned", assignedPayload);
-      io2.to(`cashier:${newCashierId}`).emit("ticket-assigned", assignedPayload);
+        if (socketModule.emitToAvailableCashiers) {
+          await socketModule.emitToAvailableCashiers(
+            updatedTicket.Service.prefix,
+            "ticket-assigned",
+            assignedPayload,
+            newCashierId
+          );
+          const io3 = require("../server/socket").getIo?.();
+          io3 && io3.to(`cashier:${newCashierId}`).emit("ticket-assigned", assignedPayload);
+        } else {
+          io2.to(room).emit("ticket-assigned", assignedPayload);
+          io2.to(`cashier:${newCashierId}`).emit("ticket-assigned", assignedPayload);
+        }
+
+        io2.to("tv").emit("ticket-assigned", assignedPayload);
+
+      } else if (newStatus === STATUS.COMPLETADO) {
+        const room = updatedTicket.Service.prefix.toLowerCase();
+        const completedPayload = {
+          ticket: payload,
+          completedByCashier: currentTicket.idCashier,
+          previousStatus: currentTicket.idTicketStatus,
+          timestamp: Date.now(),
+        };
+        io2.to(room).emit("ticket-completed", completedPayload);
+        io2.to("tv").emit("ticket-completed", completedPayload);
+
+      } else if (newStatus === STATUS.CANCELADO) {
+        const room = updatedTicket.Service.prefix.toLowerCase();
+        const cancelledPayload = {
+          ticket: payload,
+          cancelledByCashier: currentTicket.idCashier,
+          previousStatus: currentTicket.idTicketStatus,
+          timestamp: Date.now(),
+        };
+        io2.to(room).emit("ticket-cancelled", cancelledPayload);
+        io2.to("tv").emit("ticket-cancelled", cancelledPayload);
+      }
+
+      io2.emit("ticket-updated", payload);
     }
-
-    // ✅ también a la TV
-    io2.to("tv").emit("ticket-assigned", assignedPayload);
-
-  } else if (newStatus === STATUS.COMPLETADO) {
-    const room = updatedTicket.Service.prefix.toLowerCase();
-    const completedPayload = {
-      ticket: payload,
-      completedByCashier: currentTicket.idCashier,
-      previousStatus: currentTicket.idTicketStatus,
-      timestamp: Date.now(),
-    };
-    io2.to(room).emit("ticket-completed", completedPayload);
-    io2.to("tv").emit("ticket-completed", completedPayload); // ✅
-
-  } else if (newStatus === STATUS.CANCELADO) {
-    const room = updatedTicket.Service.prefix.toLowerCase();
-    const cancelledPayload = {
-      ticket: payload,
-      cancelledByCashier: currentTicket.idCashier,
-      previousStatus: currentTicket.idTicketStatus,
-      timestamp: Date.now(),
-    };
-    io2.to(room).emit("ticket-cancelled", cancelledPayload);
-    io2.to("tv").emit("ticket-cancelled", cancelledPayload); // ✅
-  }
-
-  // Mantén este broadcast global (lo escucha tu TV también si ya lo usas)
-  io2.emit("ticket-updated", payload);
-}
 
     try {
       const socketModule = require("../server/socket");
@@ -775,6 +806,7 @@ if (io2) {
     res.status(400).json({ error: error.message });
   }
 };
+
 
 exports.getPendingTickets = async (req, res) => {
   try {
