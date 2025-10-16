@@ -424,41 +424,76 @@ async function pickNextForCashier(prefix, idCashier) {
 
     const prefixLower = String(prefix || '').toLowerCase();
     const serviceId = await getServiceIdByPrefix(prefixLower);
-    if (!serviceId || !idCashier) return;
+    if (!idCashier) return;
 
-    const { TicketRegistration, Op } = require('../models');
+    const { TicketRegistration, Service, sequelize } = require('../models');
 
-    const next = await TicketRegistration.findOne({
+    const forcedAny = await TicketRegistration.findOne({
+      where: {
+        idTicketStatus: 1,
+        status: true,
+        forcedToCashierId: idCashier,
+      },
+      include: [{ model: Service, attributes: ['prefix'] }],
+      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+    });
+
+    if (forcedAny) {
+      const forcedPrefix = forcedAny.Service?.prefix || prefixLower;
+      const payload = toDisplayPayload(forcedPrefix, forcedAny, idCashier);
+      cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
+
+      // ✅ Emite directamente al cajero (y no al room, para no “ensuciar” otras cabinas)
+      emitToCashierDirect(idCashier, 'update-current-display', {
+        ticket: payload,
+        isAssigned: false,
+        timestamp: Date.now(),
+      });
+
+      console.log(`[socket:pickNextForCashier] Forzado → ${forcedAny.correlativo} a cajero ${idCashier} (svc:${forcedPrefix})`);
+      return;
+    }
+
+    // 2) Si no hay forzados a mí, busca el siguiente de MI servicio (forzado a mí o libre)
+    if (!serviceId) {
+      console.log(`[socket:pickNextForCashier] Sin idService para prefix ${prefixLower}`);
+      emitToCashierDirect(idCashier, 'no-tickets-available', { timestamp: Date.now() });
+      cashierCurrentDisplay.delete(idCashier);
+      return;
+    }
+
+    const nextInMyService = await TicketRegistration.findOne({
       where: {
         idTicketStatus: 1,
         idService: serviceId,
         status: true,
         [Op.or]: [{ forcedToCashierId: idCashier }, { forcedToCashierId: null }],
       },
+      include: [{ model: Service, attributes: ['prefix'] }],
       order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
     });
 
-    if (!next) {
+    if (!nextInMyService) {
       cashierCurrentDisplay.delete(idCashier);
       emitToCashierDirect(idCashier, 'no-tickets-available', { timestamp: Date.now() });
-      console.log(`[socket:pickNextForCashier] Sin siguiente para cajero ${idCashier} en ${prefixLower}`);
+      console.log(`[socket:pickNextForCashier] No hay siguiente para cajero ${idCashier} (svc:${prefixLower})`);
       return;
     }
 
-    const payload = toDisplayPayload(prefixLower, next, idCashier);
+    const payload = toDisplayPayload(nextInMyService.Service?.prefix || prefixLower, nextInMyService, idCashier);
     cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
+
     emitToCashierDirect(idCashier, 'update-current-display', {
       ticket: payload,
       isAssigned: false,
       timestamp: Date.now(),
     });
 
-    console.log(`[socket:pickNextForCashier] Enviado ${next.correlativo} a cajero ${idCashier} (${prefixLower})`);
+    console.log(`[socket:pickNextForCashier] Enviado ${nextInMyService.correlativo} a cajero ${idCashier} (svc:${(nextInMyService.Service?.prefix || prefixLower)})`);
   } catch (e) {
     console.error('[socket:pickNextForCashier] error:', e?.message || e);
   }
 }
-
 /**
  * Envía un batch de trabajos 'pending' al bridge correspondiente.
  * Reclama cada job de forma atómica marcándolo a 'sent' y lo emite.
