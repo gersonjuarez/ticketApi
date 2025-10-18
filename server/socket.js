@@ -1174,24 +1174,12 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
       timestamp: Date.now(),
     };
 
-    // 🔹 Emitir la transferencia visual (solo UI, no prioridad inmediata)
     io.to(room).emit('ticket-transferred', payload);
     io.to('tv').emit('ticket-transferred', payload);
 
     console.log(`[socket] ticket-transferred → ${enrichedTicket.correlativo} from:${fromCashierId} to:${toCashierId} queued:${queued} (prefix:${enrichedTicket.prefix}, room:${room})`);
 
-    // 🔹 Si el ticket fue transferido y está en cola (queued = true),
-    //     NO lo asignamos directamente al cajero destino.
-    //     Esperamos a que se vacíe la cola normal.
-    if (queued) {
-      console.log(`[socket] Ticket ${enrichedTicket.correlativo} queda en cola del servicio destino (${destPrefix})`);
-    } else {
-      // 🔹 Solo si fue asignado inmediato (autoAssignIfFree = true)
-      //     mostramos al cajero destino el nuevo ticket.
-      await pickNextForCashier(destPrefix, toCashierId);
-    }
-
-    // 🔹 Siempre liberar el cajero origen (buscar su siguiente)
+    // 🔹 Siempre liberar el cajero origen después del emit
     if (fromCashierId) {
       const originPrefix = await getPrefixByCashierId(fromCashierId);
       if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
@@ -1200,6 +1188,7 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
     console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
   }
 },
+
 
 
 
