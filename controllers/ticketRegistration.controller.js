@@ -24,17 +24,17 @@ const buildOrderForCashier = (cashierId = 0) => {
     [
       sequelize.literal(`
         CASE
-          WHEN "forcedToCashierId" = ${cid} THEN 0
-          WHEN "forcedToCashierId" IS NULL THEN 1
+          WHEN "forcedToCashierId" IS NULL THEN 0
+          WHEN "forcedToCashierId" = ${cid} THEN 1
           ELSE 2
         END
       `),
       "ASC",
     ],
-    ["idTicketStatus", "ASC"], // PENDIENTE(1) antes que EN_ATENCION(2) si se mezclan
-    ["turnNumber", "ASC"], // ⬅️ FIFO por número de turno
+    ["idTicketStatus", "ASC"], // PENDIENTE(1) antes que EN_ATENCION(2)
+    ["turnNumber", "ASC"],
     ["createdAt", "ASC"],
-    ["updatedAt", "ASC"], // ⬅️ solo de desempate, al final
+    ["updatedAt", "ASC"],
   ];
 };
 
@@ -499,25 +499,25 @@ exports.getTicketsForCashier = async (req, res) => {
       ],
     };
 
-    const queueTickets = await TicketRegistration.findAll({
-      where: queueWhere,
-      include: [{ model: Client }, { model: Service }],
-      order: [
-        [
-          sequelize.literal(`
-            CASE
-              WHEN "forcedToCashierId" = ${cashierId} THEN 0
-              WHEN "forcedToCashierId" IS NULL THEN 1
-              ELSE 2
-            END
-          `),
-          "ASC",
-        ],
-        ["turnNumber", "ASC"], // ⬅️ FIFO real
-        ["createdAt", "ASC"],
-        ["updatedAt", "ASC"],
-      ],
-    });
+const queueTickets = await TicketRegistration.findAll({
+  where: queueWhere,
+  include: [{ model: Client }, { model: Service }],
+  order: [
+    [
+      sequelize.literal(`
+        CASE
+          WHEN "forcedToCashierId" IS NULL THEN 0
+          WHEN "forcedToCashierId" = ${cashierId} THEN 1
+          ELSE 2
+        END
+      `),
+      "ASC",
+    ],
+    ["turnNumber", "ASC"],
+    ["createdAt", "ASC"],
+    ["updatedAt", "ASC"],
+  ],
+});
 
     const response = {
       current: currentTicket
