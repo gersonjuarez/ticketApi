@@ -1145,49 +1145,63 @@ module.exports = {
       console.error('[socket:notifyTicketChange] error:', e?.message || e);
     }
   },
+notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
+  try {
+    if (!io) throw new Error('io no inicializado');
+    const { Cashier, Service } = require('../models');
 
-  notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
-    try {
-      if (!io) throw new Error('io no inicializado');
-      const { Cashier, Service } = require('../models');
+    const cashierTo = await Cashier.findByPk(toCashierId, {
+      attributes: ['idCashier', 'idService'],
+      include: [{ model: Service, attributes: ['idService', 'prefix'] }],
+    });
 
-      const cashierTo = await Cashier.findByPk(toCashierId, {
-        attributes: ['idCashier', 'idService'],
-        include: [{ model: Service, attributes: ['idService', 'prefix'] }],
-      });
-
-      let enrichedTicket = { ...ticket };
-      let destPrefix = ticket.prefix || '';
-      if (cashierTo) {
-        const srvId = Number(cashierTo.idService);
-        const srvPrefix = cashierTo.Service?.prefix ? String(cashierTo.Service.prefix) : String(destPrefix || '');
-        enrichedTicket.idService = srvId;
-        enrichedTicket.prefix = srvPrefix.toUpperCase();
-        destPrefix = srvPrefix;
-      }
-
-      const room = String(destPrefix).toLowerCase();
-      const payload = {
-        ticket: { ...enrichedTicket, modulo: String(toCashierId) },
-        fromCashierId,
-        toCashierId,
-        queued: !!queued,
-        timestamp: Date.now(),
-      };
-
-      io.to(room).emit('ticket-transferred', payload);
-      io.to('tv').emit('ticket-transferred', payload);
-
-      console.log(`[socket] ticket-transferred → ${enrichedTicket.correlativo} from:${fromCashierId} to:${toCashierId} queued:${queued} (prefix:${enrichedTicket.prefix}, room:${room})`);
-
-      if (fromCashierId) {
-        const originPrefix = await getPrefixByCashierId(fromCashierId);
-        if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
-      }
-    } catch (e) {
-      console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
+    let enrichedTicket = { ...ticket };
+    let destPrefix = ticket.prefix || '';
+    if (cashierTo) {
+      const srvId = Number(cashierTo.idService);
+      const srvPrefix = cashierTo.Service?.prefix ? String(cashierTo.Service.prefix) : String(destPrefix || '');
+      enrichedTicket.idService = srvId;
+      enrichedTicket.prefix = srvPrefix.toUpperCase();
+      destPrefix = srvPrefix;
     }
-  },
+
+    const room = String(destPrefix).toLowerCase();
+    const payload = {
+      ticket: { ...enrichedTicket, modulo: String(toCashierId) },
+      fromCashierId,
+      toCashierId,
+      queued: !!queued,
+      timestamp: Date.now(),
+    };
+
+    // 🔹 Emitir la transferencia visual (solo UI, no prioridad inmediata)
+    io.to(room).emit('ticket-transferred', payload);
+    io.to('tv').emit('ticket-transferred', payload);
+
+    console.log(`[socket] ticket-transferred → ${enrichedTicket.correlativo} from:${fromCashierId} to:${toCashierId} queued:${queued} (prefix:${enrichedTicket.prefix}, room:${room})`);
+
+    // 🔹 Si el ticket fue transferido y está en cola (queued = true),
+    //     NO lo asignamos directamente al cajero destino.
+    //     Esperamos a que se vacíe la cola normal.
+    if (queued) {
+      console.log(`[socket] Ticket ${enrichedTicket.correlativo} queda en cola del servicio destino (${destPrefix})`);
+    } else {
+      // 🔹 Solo si fue asignado inmediato (autoAssignIfFree = true)
+      //     mostramos al cajero destino el nuevo ticket.
+      await pickNextForCashier(destPrefix, toCashierId);
+    }
+
+    // 🔹 Siempre liberar el cajero origen (buscar su siguiente)
+    if (fromCashierId) {
+      const originPrefix = await getPrefixByCashierId(fromCashierId);
+      if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
+    }
+  } catch (e) {
+    console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
+  }
+},
+
+
 
   redistributeTickets: async (prefix) => {
     try {
