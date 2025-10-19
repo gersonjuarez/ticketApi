@@ -1155,15 +1155,16 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
       include: [{ model: Service, attributes: ['idService', 'prefix'] }],
     });
 
-    let enrichedTicket = { ...ticket };
-    let destPrefix = ticket.prefix || '';
-    if (cashierTo) {
-      const srvId = Number(cashierTo.idService);
-      const srvPrefix = cashierTo.Service?.prefix ? String(cashierTo.Service.prefix) : String(destPrefix || '');
-      enrichedTicket.idService = srvId;
-      enrichedTicket.prefix = srvPrefix.toUpperCase();
-      destPrefix = srvPrefix;
-    }
+let enrichedTicket = { ...ticket };
+let destPrefix = ticket.prefix || '';
+if (cashierTo) {
+  // ⚠️ No cambiamos idService (mantiene el original)
+  const srvPrefix = cashierTo.Service?.prefix
+    ? String(cashierTo.Service.prefix)
+    : String(destPrefix || '');
+  enrichedTicket.prefix = srvPrefix.toUpperCase(); // solo visual
+  destPrefix = srvPrefix;
+}
 
     const room = String(destPrefix).toLowerCase();
     const payload = {

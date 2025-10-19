@@ -1014,7 +1014,7 @@ exports.transfer = async (req, res) => {
         idTicketStatus: STATUS.PENDIENTE, // cola normal
         idCashier: null,
         forcedToCashierId: null,
-        idService: toCashier.Service.idService, // cambiar servicio destino
+       
         dispatchedByUser: null,
       },
       { transaction: t }
@@ -1045,18 +1045,18 @@ exports.transfer = async (req, res) => {
       const usuarioName = cli?.name || "Sin cliente";
 
       const payload = {
-        idTicketRegistration: ticket.idTicketRegistration,
-        turnNumber: ticket.turnNumber,
-        correlativo: ticket.correlativo, // ✅ se mantiene
-        prefix: destPrefix, // ✅ visualmente destino
-        modulo: toCashier.Service?.name || "—",
-        idService: toCashier.Service.idService,
-        idTicketStatus: STATUS.PENDIENTE,
-        idCashier: null,
-        forcedToCashierId: null,
-        updatedAt: ticket.updatedAt,
-        usuario: usuarioName,
-      };
+  idTicketRegistration: ticket.idTicketRegistration,
+  turnNumber: ticket.turnNumber,
+  correlativo: ticket.correlativo,
+  prefix: destPrefix, // solo visual
+  modulo: toCashier.Service?.name || "—", // solo visual
+  idService: ticket.idService, // ✅ mantener el mismo idService real
+  idTicketStatus: STATUS.PENDIENTE,
+  idCashier: null,
+  forcedToCashierId: null,
+  updatedAt: ticket.updatedAt,
+  usuario: usuarioName,
+};
 
       const transferred = {
         ticket: payload,
