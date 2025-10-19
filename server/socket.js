@@ -428,50 +428,6 @@ async function pickNextForCashier(prefix, idCashier) {
 
     const { TicketRegistration, Service, sequelize } = require('../models');
 
-    // 1) Primero buscar PENDIENTE de MI servicio, prefiriendo LIBRES (NULL) y luego forzados a mí
-    if (!serviceId) {
-      console.log(`[socket:pickNextForCashier] Sin idService para prefix ${prefixLower}`);
-      emitToCashierDirect(idCashier, 'no-tickets-available', { timestamp: Date.now() });
-      cashierCurrentDisplay.delete(idCashier);
-      return;
-    }
-
-    const nextInMyService = await TicketRegistration.findOne({
-      where: {
-        idTicketStatus: 1,
-        idService: serviceId,
-        status: true,
-      },
-      include: [{ model: Service, attributes: ['prefix'] }],
-      order: [
-        [
-          sequelize.literal(`
-            CASE
-              WHEN "forcedToCashierId" IS NULL THEN 0
-              WHEN "forcedToCashierId" = ${idCashier} THEN 1
-              ELSE 2
-            END
-          `),
-          'ASC'
-        ],
-        ['turnNumber', 'ASC'],
-        ['createdAt', 'ASC']
-      ],
-    });
-
-    if (nextInMyService) {
-      const payload = toDisplayPayload(nextInMyService.Service?.prefix || prefixLower, nextInMyService, idCashier);
-      cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
-      emitToCashierDirect(idCashier, 'update-current-display', {
-        ticket: payload,
-        isAssigned: false,
-        timestamp: Date.now(),
-      });
-      console.log(`[socket:pickNextForCashier] Enviado ${nextInMyService.correlativo} a cajero ${idCashier} (svc:${(nextInMyService.Service?.prefix || prefixLower)})`);
-      return;
-    }
-
-    // 2) Si no hay en mi servicio, considerar forzados a mí en cualquier servicio
     const forcedAny = await TicketRegistration.findOne({
       where: {
         idTicketStatus: 1,
@@ -486,24 +442,58 @@ async function pickNextForCashier(prefix, idCashier) {
       const forcedPrefix = forcedAny.Service?.prefix || prefixLower;
       const payload = toDisplayPayload(forcedPrefix, forcedAny, idCashier);
       cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
+
+      // ✅ Emite directamente al cajero (y no al room, para no “ensuciar” otras cabinas)
       emitToCashierDirect(idCashier, 'update-current-display', {
         ticket: payload,
         isAssigned: false,
         timestamp: Date.now(),
       });
+
       console.log(`[socket:pickNextForCashier] Forzado → ${forcedAny.correlativo} a cajero ${idCashier} (svc:${forcedPrefix})`);
       return;
     }
 
-    // 3) No hay nada
-    cashierCurrentDisplay.delete(idCashier);
-    emitToCashierDirect(idCashier, 'no-tickets-available', { timestamp: Date.now() });
-    console.log(`[socket:pickNextForCashier] No hay siguiente para cajero ${idCashier} (svc:${prefixLower})`);
+    // 2) Si no hay forzados a mí, busca el siguiente de MI servicio (forzado a mí o libre)
+    if (!serviceId) {
+      console.log(`[socket:pickNextForCashier] Sin idService para prefix ${prefixLower}`);
+      emitToCashierDirect(idCashier, 'no-tickets-available', { timestamp: Date.now() });
+      cashierCurrentDisplay.delete(idCashier);
+      return;
+    }
+
+    const nextInMyService = await TicketRegistration.findOne({
+      where: {
+        idTicketStatus: 1,
+        idService: serviceId,
+        status: true,
+        [Op.or]: [{ forcedToCashierId: idCashier }, { forcedToCashierId: null }],
+      },
+      include: [{ model: Service, attributes: ['prefix'] }],
+      order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+    });
+
+    if (!nextInMyService) {
+      cashierCurrentDisplay.delete(idCashier);
+      emitToCashierDirect(idCashier, 'no-tickets-available', { timestamp: Date.now() });
+      console.log(`[socket:pickNextForCashier] No hay siguiente para cajero ${idCashier} (svc:${prefixLower})`);
+      return;
+    }
+
+    const payload = toDisplayPayload(nextInMyService.Service?.prefix || prefixLower, nextInMyService, idCashier);
+    cashierCurrentDisplay.set(idCashier, { currentTicket: payload, isAssigned: false });
+
+    emitToCashierDirect(idCashier, 'update-current-display', {
+      ticket: payload,
+      isAssigned: false,
+      timestamp: Date.now(),
+    });
+
+    console.log(`[socket:pickNextForCashier] Enviado ${nextInMyService.correlativo} a cajero ${idCashier} (svc:${(nextInMyService.Service?.prefix || prefixLower)})`);
   } catch (e) {
     console.error('[socket:pickNextForCashier] error:', e?.message || e);
   }
 }
-
 /**
  * Envía un batch de trabajos 'pending' al bridge correspondiente.
  * Reclama cada job de forma atómica marcándolo a 'sent' y lo emite.
@@ -1145,53 +1135,49 @@ module.exports = {
       console.error('[socket:notifyTicketChange] error:', e?.message || e);
     }
   },
-notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
-  try {
-    if (!io) throw new Error('io no inicializado');
-    const { Cashier, Service } = require('../models');
 
-    const cashierTo = await Cashier.findByPk(toCashierId, {
-      attributes: ['idCashier', 'idService'],
-      include: [{ model: Service, attributes: ['idService', 'prefix'] }],
-    });
+  notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
+    try {
+      if (!io) throw new Error('io no inicializado');
+      const { Cashier, Service } = require('../models');
 
-let enrichedTicket = { ...ticket };
-let destPrefix = ticket.prefix || '';
-if (cashierTo) {
-  // ⚠️ No cambiamos idService (mantiene el original)
-  const srvPrefix = cashierTo.Service?.prefix
-    ? String(cashierTo.Service.prefix)
-    : String(destPrefix || '');
-  enrichedTicket.prefix = srvPrefix.toUpperCase(); // solo visual
-  destPrefix = srvPrefix;
-}
+      const cashierTo = await Cashier.findByPk(toCashierId, {
+        attributes: ['idCashier', 'idService'],
+        include: [{ model: Service, attributes: ['idService', 'prefix'] }],
+      });
 
-    const room = String(destPrefix).toLowerCase();
-    const payload = {
-      ticket: { ...enrichedTicket, modulo: String(toCashierId) },
-      fromCashierId,
-      toCashierId,
-      queued: !!queued,
-      timestamp: Date.now(),
-    };
+      let enrichedTicket = { ...ticket };
+      let destPrefix = ticket.prefix || '';
+      if (cashierTo) {
+        const srvId = Number(cashierTo.idService);
+        const srvPrefix = cashierTo.Service?.prefix ? String(cashierTo.Service.prefix) : String(destPrefix || '');
+        enrichedTicket.idService = srvId;
+        enrichedTicket.prefix = srvPrefix.toUpperCase();
+        destPrefix = srvPrefix;
+      }
 
-    io.to(room).emit('ticket-transferred', payload);
-    io.to('tv').emit('ticket-transferred', payload);
+      const room = String(destPrefix).toLowerCase();
+      const payload = {
+        ticket: { ...enrichedTicket, modulo: String(toCashierId) },
+        fromCashierId,
+        toCashierId,
+        queued: !!queued,
+        timestamp: Date.now(),
+      };
 
-    console.log(`[socket] ticket-transferred → ${enrichedTicket.correlativo} from:${fromCashierId} to:${toCashierId} queued:${queued} (prefix:${enrichedTicket.prefix}, room:${room})`);
+      io.to(room).emit('ticket-transferred', payload);
+      io.to('tv').emit('ticket-transferred', payload);
 
-    // 🔹 Siempre liberar el cajero origen después del emit
-    if (fromCashierId) {
-      const originPrefix = await getPrefixByCashierId(fromCashierId);
-      if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
+      console.log(`[socket] ticket-transferred → ${enrichedTicket.correlativo} from:${fromCashierId} to:${toCashierId} queued:${queued} (prefix:${enrichedTicket.prefix}, room:${room})`);
+
+      if (fromCashierId) {
+        const originPrefix = await getPrefixByCashierId(fromCashierId);
+        if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
+      }
+    } catch (e) {
+      console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
     }
-  } catch (e) {
-    console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
-  }
-},
-
-
-
+  },
 
   redistributeTickets: async (prefix) => {
     try {
@@ -1421,4 +1407,4 @@ if (cashierTo) {
 
   // 👉 Exportamos para que el controlador pueda llamarlo
   pickNextForCashier,
-};
+};  
