@@ -1126,10 +1126,10 @@ exports.transfer = async (req, res) => {
     // ======== Rama: mantener número/servicio de origen ========
     if (keepOriginalNumber) {
       const updateData = {
-        idTicketStatus: newStatus,
-        idCashier: assignedNow ? toCashier.idCashier : null,
-        forcedToCashierId: toCashier.idCashier,
-        dispatchedByUser: assignedNow ? performedByUserId : null,
+      idTicketStatus: STATUS.PENDIENTE,         // 🔹 se va a la cola
+  idCashier: null,                          // 🔹 no asignado todavía
+  forcedToCashierId: toCashier.idCashier,   // 🔹 reservado solo para ese cajero
+  dispatchedByUser: null,                   // 🔹 no despachado aún
         // NO tocamos idService/turnNumber/correlativo
       };
 
@@ -1307,11 +1307,11 @@ const payload = {
     }
 
     const updateData = {
-      idTicketStatus: newStatus,
-      idCashier: assignedNow ? toCashier.idCashier : null,
+      idTicketStatus: STATUS.PENDIENTE,
+      idCashier: null,  
       forcedToCashierId: toCashier.idCashier,
       idService: destServiceId,
-      dispatchedByUser: assignedNow ? performedByUserId : null,
+      dispatchedByUser: null,  
       ...(needsRenumber
         ? { turnNumber: nextTurn, correlativo: nextCorrelativo }
         : {}),
