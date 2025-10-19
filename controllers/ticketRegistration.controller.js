@@ -1009,16 +1009,16 @@ exports.transfer = async (req, res) => {
        - marcar pendiente (cola)
        - quitar forcedToCashierId
     ======================================================= */
-    await ticket.update(
-      {
-        idTicketStatus: STATUS.PENDIENTE, // cola normal
-        idCashier: null,
-        forcedToCashierId: null,
-       
-        dispatchedByUser: null,
-      },
-      { transaction: t }
-    );
+await ticket.update(
+  {
+    idTicketStatus: STATUS.PENDIENTE, // vuelve a la cola
+    idCashier: null,
+    idService: toCashier.idService,    // ✅ ahora sí, lo movemos al servicio destino
+    forcedToCashierId: toCashierId,    // ✅ reservado para el cajero destino
+    dispatchedByUser: null,
+  },
+  { transaction: t }
+);
 
     await TicketHistory.create(
       {
