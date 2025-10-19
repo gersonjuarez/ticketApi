@@ -916,7 +916,7 @@ exports.findAllLive = async (req, res) => {
 };
 
 /* ============================
-   TRANSFERIR TICKET
+   TRANSFERIR TICKET (CORREGIDO)
 ============================ */
 exports.transfer = async (req, res) => {
   const t = await sequelize.transaction();
@@ -1055,14 +1055,12 @@ exports.transfer = async (req, res) => {
 
     /* =======================================================
        PASO 1: Estado intermedio TRASLADO (5) + cerrar span origen
-       (no aparece en TV porque TV sólo muestra 1 y 2)
     ======================================================= */
     await ticket.update(
       {
         idTicketStatus: STATUS.TRASLADO,
-        // sigue momentáneamente asignado al cajero origen para trazabilidad
         idCashier: fromCashierId,
-        forcedToCashierId: toCashier.idCashier, // reserva para destino
+        forcedToCashierId: toCashier.idCashier, // reserva temporal
       },
       { transaction: t }
     );
@@ -1077,40 +1075,36 @@ exports.transfer = async (req, res) => {
       { transaction: t }
     );
 
-    const nowClose = new Date();
     await Attendance.closeOpenSpan(
-      { idTicket: ticket.idTicketRegistration, at: nowClose },
+      { idTicket: ticket.idTicketRegistration, at: new Date() },
       t
     );
 
-    // Anuncio sockets: transfiriendo (opcional)
-    try {
-      const ioTransf = require("../server/socket").getIo?.();
-      if (ioTransf) {
-        ioTransf.to(`cashier:${fromCashierId}`).emit("ticket-transferring", {
-          idTicketRegistration: ticket.idTicketRegistration,
-          correlativo: ticket.correlativo,
-          fromCashierId,
-          toCashierId: toCashier.idCashier,
-          timestamp: Date.now(),
-        });
-        ioTransf
-          .to(`cashier:${toCashier.idCashier}`)
-          .emit("ticket-transferring", {
-            idTicketRegistration: ticket.idTicketRegistration,
-            correlativo: ticket.correlativo,
-            fromCashierId,
-            toCashierId: toCashier.idCashier,
-            timestamp: Date.now(),
-          });
-      }
-    } catch {}
+    // Emitir socket de transferencia en curso
+    const ioTransf = require("../server/socket").getIo?.();
+    if (ioTransf) {
+      ioTransf.to(`cashier:${fromCashierId}`).emit("ticket-transferring", {
+        idTicketRegistration: ticket.idTicketRegistration,
+        correlativo: ticket.correlativo,
+        fromCashierId,
+        toCashierId: toCashier.idCashier,
+        timestamp: Date.now(),
+      });
+      ioTransf.to(`cashier:${toCashier.idCashier}`).emit("ticket-transferring", {
+        idTicketRegistration: ticket.idTicketRegistration,
+        correlativo: ticket.correlativo,
+        fromCashierId,
+        toCashierId: toCashier.idCashier,
+        timestamp: Date.now(),
+      });
+    }
 
     /* =======================================================
-       PASO 2: Estado final en destino (cola=1 o en atención=2)
+       PASO 2: Definir nuevo estado en destino
     ======================================================= */
     let newStatus = STATUS.PENDIENTE;
     let assignedNow = false;
+
     if (!isDestBusy && autoAssign) {
       newStatus = STATUS.EN_ATENCION;
       assignedNow = true;
@@ -1118,246 +1112,24 @@ exports.transfer = async (req, res) => {
       newStatus = STATUS.PENDIENTE;
     }
 
-    // ======== Rama: mantener número/servicio de origen ========
-    if (keepOriginalNumber) {
-      const updateData = {
-        idTicketStatus: newStatus,
-        idCashier: assignedNow ? toCashier.idCashier : null,
-        forcedToCashierId: assignedNow ? toCashier.idCashier : null,
-        dispatchedByUser: assignedNow ? performedByUserId : null,
-        // NO tocamos idService/turnNumber/correlativo
-      };
-
-      await ticket.update(updateData, { transaction: t });
-
-      await TicketTransferLog.create(
-        {
-          idTicketRegistration: ticket.idTicketRegistration,
-          fromCashierId: fromCashierId || null,
-          toCashierId: toCashier.idCashier,
-          performedByUserId,
-          comment: comment?.trim() || null,
-        },
-        { transaction: t }
-      );
-
-      await TicketHistory.create(
-        {
-          idTicket: ticket.idTicketRegistration,
-          fromStatus: STATUS.TRASLADO,
-          toStatus: newStatus,
-          changedByUser: performedByUserId,
-        },
-        { transaction: t }
-      );
-
-      // Si quedó asignado en destino, abrimos span allí (mismo servicio de origen)
-      if (assignedNow && newStatus === STATUS.EN_ATENCION) {
-        await Attendance.rotateSpan(
-          {
-            idTicket: ticket.idTicketRegistration,
-            idCashier: toCashier.idCashier,
-            idService: ticket.idService,
-            at: new Date(),
-          },
-          t
-        );
-      }
-
-      await t.commit();
-
-      // -------- Sockets --------
-      const io3 = require("../server/socket").getIo?.();
-      if (io3) {
-        const originPrefix = (ticket.Service?.prefix || "").toUpperCase();
-        const originRoom = originPrefix.toLowerCase();
-        // ⚠️ Servicio de destino (visual para TV)
-        const destPrefix = (toCashier.Service?.prefix || "").toUpperCase();
-        const destModulo = toCashier.Service?.name || "—";
-        let usuarioName = "Sin cliente";
-        try {
-          const cli = await Client.findByPk(ticket.idClient);
-          if (cli && cli.name) usuarioName = cli.name;
-        } catch {}
-
-        const payload = {
-          idTicketRegistration: ticket.idTicketRegistration,
-          turnNumber: ticket.turnNumber, // ✅ mantiene numeración de origen
-          correlativo: ticket.correlativo, // ✅ mantiene correlativo de origen
-          // 👇 Mostrar SIEMPRE destino en la UI (TV/cajeros), aunque idService siga siendo el de origen
-          prefix: destPrefix, // ✅ ahora muestra servicio de destino
-          modulo: destModulo, // ✅ nombre del servicio destino
-          idService: ticket.idService, // ✅ NO tocar (trazabilidad)
-          idTicketStatus: newStatus,
-          idCashier: assignedNow ? toCashier.idCashier : null,
-          forcedToCashierId: toCashier.idCashier,
-          updatedAt: ticket.updatedAt,
-          usuario: usuarioName,
-        };
-
-        const transferred = {
-          ticket: payload,
-          fromCashierId: fromCashierId || null,
-          toCashierId: toCashier.idCashier,
-          queued: !assignedNow,
-          timestamp: Date.now(),
-        };
-
-        // Cajeros
-        io3
-          .to(`cashier:${fromCashierId}`)
-          .emit("ticket-transferred", transferred);
-        io3
-          .to(`cashier:${toCashier.idCashier}`)
-          .emit("ticket-transferred", transferred);
-        // ✅ TV también
-        io3.to("tv").emit("ticket-transferred", transferred);
-
-        if (assignedNow) {
-          const assignedPayload = {
-            ticket: payload,
-            assignedToCashier: toCashier.idCashier,
-            previousStatus: STATUS.TRASLADO,
-            timestamp: Date.now(),
-            attentionStartedAt: null,
-          };
-          io3
-            .to(`cashier:${toCashier.idCashier}`)
-            .emit("ticket-assigned", assignedPayload);
-          io3.to("tv").emit("ticket-assigned", assignedPayload); // ✅
-        } else {
-          // Mantener visible en origen como pendiente, si así lo quieres
-          const queuedPayload = {
-            ...payload,
-            idTicketStatus: STATUS.PENDIENTE,
-            idCashier: null,
-          };
-          io3.to(originRoom).emit("new-ticket", queuedPayload);
-          io3
-            .to(`cashier:${toCashier.idCashier}`)
-            .emit("update-current-display", {
-              ticket: queuedPayload,
-              isAssigned: false,
-              timestamp: Date.now(),
-            });
-          // (opcional) También podrías informar a la TV que reapareció en cola en su servicio de origen:
-          io3.to("tv").emit("new-ticket", queuedPayload); // ✅ opcional, útil si tu TV escucha este evento
-        }
-
-        io3.emit("ticket-updated", payload);
-      }
-
-      // Liberar y tomar siguiente en origen
-      try {
-        const socketModule = require("../server/socket");
-        if (fromCashierId) {
-          const originPrefixLower = (
-            ticket.Service?.prefix || ""
-          ).toLowerCase(); // ⬅️ minúsculas
-          await socketModule.pickNextForCashier?.(
-            originPrefixLower,
-            fromCashierId
-          );
-        }
-      } catch (e) {
-        console.error(
-          "[transfer keepOriginalNumber] pickNextForCashier error:",
-          e?.message || e
-        );
-      }
-
-      return res.json({
-        ok: true,
-        ticketId: ticket.idTicketRegistration,
-        fromCashierId: fromCashierId || null,
-        toCashierId: toCashier.idCashier,
-        assignedNow,
-        queued: !assignedNow,
-        correlativo: ticket.correlativo,
-        turnNumber: ticket.turnNumber,
-        attentionStartedAt: null,
-        keptOriginalNumber: true,
-      });
-    }
-
-    // ======== Rama: renumerar si cambia de servicio ========
-    const destServiceId = Number(toCashier.idService);
-    const originPrefix = (ticket.Service?.prefix || "").toUpperCase();
-    const destPrefix = (toCashier.Service?.prefix || "").toUpperCase();
-
-    const needsRenumber = Number(ticket.idService) !== destServiceId;
-    let nextTurn = ticket.turnNumber;
-    let nextCorrelativo = ticket.correlativo;
-
-    if (needsRenumber) {
-      const maxAttempts = 3;
-      let okNum = false;
-      let lastErr = null;
-
-      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-        try {
-          const n = await getNextTurnNumber(destServiceId, t);
-          nextTurn = n;
-          nextCorrelativo = `${destPrefix}-${padN(nextTurn, 3)}`;
-          okNum = true;
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (attempt >= maxAttempts || !isUniqueError(err)) throw err;
-        }
-      }
-      if (!okNum && lastErr) throw lastErr;
-    }
-
+    // ✅ REGLA: si va en cola → forcedToCashierId debe quedar en null
     const updateData = {
       idTicketStatus: newStatus,
       idCashier: assignedNow ? toCashier.idCashier : null,
       forcedToCashierId: assignedNow ? toCashier.idCashier : null,
-      idService: destServiceId,
+      idService: toCashier.idService,
       dispatchedByUser: assignedNow ? performedByUserId : null,
-      ...(needsRenumber
-        ? { turnNumber: nextTurn, correlativo: nextCorrelativo }
-        : {}),
     };
-
-    const tryUpdate = async () => {
-      await ticket.update(updateData, { transaction: t });
-    };
-
-    if (needsRenumber) {
-      let ok = false;
-      let lastErr = null;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        try {
-          await tryUpdate();
-          ok = true;
-          break;
-        } catch (err) {
-          lastErr = err;
-          if (isUniqueError(err) && attempt < 3) {
-            // Pequeño backoff para dejar que se consoliden commits de otros writers
-            await new Promise((r) =>
-              setTimeout(r, 25 + Math.floor(Math.random() * 35))
-            );
-            const n = await getNextTurnNumber(destServiceId, t);
-            nextTurn = n;
-            nextCorrelativo = `${destPrefix}-${padN(nextTurn, 3)}`;
-            updateData.turnNumber = nextTurn;
-            updateData.correlativo = nextCorrelativo;
-            continue;
-          }
-          throw err;
-        }
-      }
-      if (!ok) throw lastErr;
-    } else {
-      await tryUpdate();
+    if (!assignedNow) {
+      updateData.forcedToCashierId = null; // 👈 clave para que no tenga prioridad
     }
+
+    await ticket.update(updateData, { transaction: t });
 
     await TicketTransferLog.create(
       {
         idTicketRegistration: ticket.idTicketRegistration,
-        fromCashierId: fromCashierId || null,
+        fromCashierId,
         toCashierId: toCashier.idCashier,
         performedByUserId,
         comment: comment?.trim() || null,
@@ -1375,14 +1147,13 @@ exports.transfer = async (req, res) => {
       { transaction: t }
     );
 
-    const now = new Date();
     if (assignedNow && newStatus === STATUS.EN_ATENCION) {
       await Attendance.rotateSpan(
         {
           idTicket: ticket.idTicketRegistration,
           idCashier: toCashier.idCashier,
-          idService: destServiceId,
-          at: now,
+          idService: toCashier.idService,
+          at: new Date(),
         },
         t
       );
@@ -1390,71 +1161,43 @@ exports.transfer = async (req, res) => {
 
     await t.commit();
 
-    let attentionStartedAt = null;
-    if (assignedNow && newStatus === STATUS.EN_ATENCION) {
-      const openSpan = await TicketAttendance.findOne({
-        where: { idTicket: ticket.idTicketRegistration, endedAt: null },
-        order: [["startedAt", "DESC"]],
-      });
-      attentionStartedAt = openSpan ? openSpan.startedAt : null;
-    }
-
+    /* =======================================================
+       PASO 3: Notificar por sockets
+    ======================================================= */
     const io3 = require("../server/socket").getIo?.();
     if (io3) {
+      const destPrefix = (toCashier.Service?.prefix || "").toUpperCase();
+      const originPrefix = (ticket.Service?.prefix || "").toUpperCase();
       const destRoom = destPrefix.toLowerCase();
 
-      let usuarioName = "Sin cliente";
-      try {
-        const cli = await Client.findByPk(ticket.idClient);
-        if (cli && cli.name) usuarioName = cli.name;
-      } catch {}
+      const client = await Client.findByPk(ticket.idClient);
+      const usuarioName = client?.name || "Sin cliente";
 
       const payload = {
         idTicketRegistration: ticket.idTicketRegistration,
-        turnNumber: nextTurn,
-        correlativo: nextCorrelativo,
+        correlativo: ticket.correlativo,
+        turnNumber: ticket.turnNumber,
         prefix: destPrefix,
-        idService: destServiceId,
+        modulo: toCashier.Service?.name || "—",
+        idService: toCashier.idService,
         idTicketStatus: newStatus,
         idCashier: assignedNow ? toCashier.idCashier : null,
-        forcedToCashierId: toCashier.idCashier,
+        forcedToCashierId: assignedNow ? toCashier.idCashier : null,
         updatedAt: ticket.updatedAt,
         usuario: usuarioName,
-        modulo: toCashier.Service?.name || "—",
       };
-
-      if (originPrefix) {
-        io3.to(originPrefix.toLowerCase()).emit("ticket-removed", {
-          idTicketRegistration: ticket.idTicketRegistration,
-          correlativo: nextCorrelativo,
-          fromService: originPrefix,
-          timestamp: Date.now(),
-        });
-        // (opcional) infórmalo en TV también si la TV reacciona a 'ticket-removed'
-        io3.to("tv").emit("ticket-removed", {
-          idTicketRegistration: ticket.idTicketRegistration,
-          correlativo: nextCorrelativo,
-          fromService: originPrefix,
-          timestamp: Date.now(),
-        });
-      }
 
       const transferred = {
         ticket: payload,
-        fromCashierId: fromCashierId || null,
+        fromCashierId,
         toCashierId: toCashier.idCashier,
         queued: !assignedNow,
         timestamp: Date.now(),
       };
 
-      // Cajeros
-      io3
-        .to(`cashier:${fromCashierId}`)
-        .emit("ticket-transferred", transferred);
-      io3
-        .to(`cashier:${toCashier.idCashier}`)
-        .emit("ticket-transferred", transferred);
-      // ✅ TV también
+      // Enviar evento general
+      io3.to(`cashier:${fromCashierId}`).emit("ticket-transferred", transferred);
+      io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-transferred", transferred);
       io3.to("tv").emit("ticket-transferred", transferred);
 
       if (assignedNow) {
@@ -1463,79 +1206,47 @@ exports.transfer = async (req, res) => {
           assignedToCashier: toCashier.idCashier,
           previousStatus: STATUS.TRASLADO,
           timestamp: Date.now(),
-          attentionStartedAt,
+          attentionStartedAt: null,
         };
-        io3
-          .to(`cashier:${toCashier.idCashier}`)
-          .emit("ticket-assigned", assignedPayload);
-        io3.to("tv").emit("ticket-assigned", assignedPayload); // ✅
-
-        // Si no quieres que se vea en cola en el destino, lo quitas del room del destino
-        io3.to(destRoom).emit("ticket-removed", {
-          idTicketRegistration: ticket.idTicketRegistration,
-          correlativo: nextCorrelativo,
-          fromService: destPrefix,
-          timestamp: Date.now(),
-        });
-        // (opcional) también en TV
-        io3.to("tv").emit("ticket-removed", {
-          idTicketRegistration: ticket.idTicketRegistration,
-          correlativo: nextCorrelativo,
-          fromService: destPrefix,
-          timestamp: Date.now(),
-        });
+        io3.to(`cashier:${toCashier.idCashier}`).emit("ticket-assigned", assignedPayload);
+        io3.to("tv").emit("ticket-assigned", assignedPayload);
       } else {
+        // 🔹 Entra a la cola normal
         const queuedPayload = {
           ...payload,
           idTicketStatus: STATUS.PENDIENTE,
           idCashier: null,
+          forcedToCashierId: null,
         };
         io3.to(destRoom).emit("new-ticket", queuedPayload);
-        io3
-          .to(`cashier:${toCashier.idCashier}`)
-          .emit("new-ticket", queuedPayload);
-        io3
-          .to(`cashier:${toCashier.idCashier}`)
-          .emit("update-current-display", {
-            ticket: queuedPayload,
-            isAssigned: false,
-            timestamp: Date.now(),
-          });
-        // ✅ TV también para que aparezca en “En cola” del servicio destino
+        io3.to(`cashier:${toCashier.idCashier}`).emit("new-ticket", queuedPayload);
         io3.to("tv").emit("new-ticket", queuedPayload);
       }
 
       io3.emit("ticket-updated", payload);
     }
+
+    // 🔄 Liberar la ventanilla de origen y cargar siguiente
     try {
       const socketModule = require("../server/socket");
-      if (
-        currentTicket.idTicketStatus === STATUS.EN_ATENCION &&
-        (newStatus === STATUS.CANCELADO || newStatus === STATUS.COMPLETADO)
-      ) {
-        const freedCashierId = newCashierId || currentTicket.idCashier || null;
-        if (freedCashierId) {
-          const roomPrefix = (
-            updatedTicket.Service?.prefix || ""
-          ).toLowerCase();
-          await socketModule.pickNextForCashier?.(roomPrefix, freedCashierId);
-        }
+      if (fromCashierId) {
+        const originPrefixLower = (ticket.Service?.prefix || "").toLowerCase();
+        await socketModule.pickNextForCashier?.(originPrefixLower, fromCashierId);
       }
     } catch (e) {
-      console.error("[update] pickNextForCashier error:", e?.message || e);
+      console.error("[transfer] pickNextForCashier error:", e?.message || e);
     }
 
     return res.json({
       ok: true,
       ticketId: ticket.idTicketRegistration,
-      fromCashierId: fromCashierId || null,
+      fromCashierId,
       toCashierId: toCashier.idCashier,
       assignedNow,
       queued: !assignedNow,
-      correlativo: nextCorrelativo,
-      turnNumber: nextTurn,
-      attentionStartedAt: attentionStartedAt || null,
-      keptOriginalNumber: false,
+      correlativo: ticket.correlativo,
+      turnNumber: ticket.turnNumber,
+      keptOriginalNumber: keepOriginalNumber,
     });
   } catch (err) {
     console.error("[transfer] error:", err);
