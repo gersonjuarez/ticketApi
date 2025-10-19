@@ -1113,16 +1113,20 @@ exports.transfer = async (req, res) => {
     }
 
     // ✅ REGLA: si va en cola → forcedToCashierId debe quedar en null
-    const updateData = {
-      idTicketStatus: newStatus,
-      idCashier: assignedNow ? toCashier.idCashier : null,
-      forcedToCashierId: assignedNow ? toCashier.idCashier : null,
-      idService: toCashier.idService,
-      dispatchedByUser: assignedNow ? performedByUserId : null,
-    };
-    if (!assignedNow) {
-      updateData.forcedToCashierId = null; // 👈 clave para que no tenga prioridad
-    }
+
+const updateData = {
+  idTicketStatus: newStatus,
+  idCashier: assignedNow ? toCashier.idCashier : null,
+  forcedToCashierId: assignedNow ? toCashier.idCashier : null,
+  // ❌ No cambiar idService ni turnNumber ni correlativo
+  dispatchedByUser: assignedNow ? performedByUserId : null,
+};
+
+// Si no está asignado aún → se va a la cola normal
+if (!assignedNow) {
+  updateData.forcedToCashierId = null;
+}
+
 
     await ticket.update(updateData, { transaction: t });
 
