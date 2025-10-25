@@ -963,11 +963,12 @@ exports.transfer = async (req, res) => {
     });
 
     // =======================
-    // 📅 Fecha local Guatemala
+    // 📅 Fecha local Guatemala (Node 22-safe)
     // =======================
     const tz = require('date-fns-tz');
-    const nowGuatemala = tz.utcToZonedTime(new Date(), 'America/Guatemala');
-    const todayStr = tz.format(nowGuatemala, 'yyyy-MM-dd', {
+    const { utcToZonedTime, format } = tz.default || tz;
+    const nowGuatemala = utcToZonedTime(new Date(), 'America/Guatemala');
+    const todayStr = format(nowGuatemala, 'yyyy-MM-dd', {
       timeZone: 'America/Guatemala',
     });
 
@@ -986,7 +987,7 @@ exports.transfer = async (req, res) => {
     // 🔹 Cambiar servicio y resetear datos
     ticket.idService = serviceDestinoId;
     ticket.idCashier = null;
-    ticket.idTicketStatus = 1; // Pendiente
+    ticket.idTicketStatus = STATUS.PENDIENTE;
     ticket.forcedToCashierId = null;
     ticket.updatedAt = new Date();
 
@@ -1075,6 +1076,7 @@ exports.transfer = async (req, res) => {
     );
 
     console.log('[transfer] 📡 Evento emitido.');
+
     return res.json({
       ok: true,
       message: 'Ticket transferido al final de la cola del nuevo servicio.',
@@ -1090,3 +1092,4 @@ exports.transfer = async (req, res) => {
     });
   }
 };
+
