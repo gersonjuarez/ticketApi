@@ -1136,48 +1136,52 @@ module.exports = {
     }
   },
 
-  notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
-    try {
-      if (!io) throw new Error('io no inicializado');
-      const { Cashier, Service } = require('../models');
+ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
+  try {
+    if (!io) throw new Error('io no inicializado');
+    const { Cashier, Service } = require('../models');
 
-      const cashierTo = await Cashier.findByPk(toCashierId, {
-        attributes: ['idCashier', 'idService'],
-        include: [{ model: Service, attributes: ['idService', 'prefix'] }],
-      });
+    const cashierTo = await Cashier.findByPk(toCashierId, {
+      attributes: ['idCashier', 'idService'],
+      include: [{ model: Service, attributes: ['idService', 'prefix'] }],
+    });
 
-      let enrichedTicket = { ...ticket };
-      let destPrefix = ticket.prefix || '';
-      if (cashierTo) {
-        const srvId = Number(cashierTo.idService);
-        const srvPrefix = cashierTo.Service?.prefix ? String(cashierTo.Service.prefix) : String(destPrefix || '');
-        enrichedTicket.idService = srvId;
-        enrichedTicket.prefix = srvPrefix.toUpperCase();
-        destPrefix = srvPrefix;
-      }
-
-      const room = String(destPrefix).toLowerCase();
-      const payload = {
-        ticket: { ...enrichedTicket, modulo: String(toCashierId) },
-        fromCashierId,
-        toCashierId,
-        queued: !!queued,
-        timestamp: Date.now(),
-      };
-
-      io.to(room).emit('ticket-transferred', payload);
-      io.to('tv').emit('ticket-transferred', payload);
-
-      console.log(`[socket] ticket-transferred → ${enrichedTicket.correlativo} from:${fromCashierId} to:${toCashierId} queued:${queued} (prefix:${enrichedTicket.prefix}, room:${room})`);
-
-      if (fromCashierId) {
-        const originPrefix = await getPrefixByCashierId(fromCashierId);
-        if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
-      }
-    } catch (e) {
-      console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
+    let enrichedTicket = { ...ticket };
+    let destPrefix = ticket.prefix || '';
+    if (cashierTo) {
+      const srvId = Number(cashierTo.idService);
+      const srvPrefix = cashierTo.Service?.prefix ? String(cashierTo.Service.prefix) : String(destPrefix || '');
+      enrichedTicket.idService = srvId;
+      enrichedTicket.prefix = srvPrefix.toUpperCase();
+      destPrefix = srvPrefix;
     }
-  },
+
+    const room = String(destPrefix).toLowerCase();
+    const payload = {
+      ticket: { ...enrichedTicket, modulo: String(toCashierId) },
+      fromCashierId,
+      toCashierId,
+      queued: true,              // 🔹 deja claro que va a la cola
+      isPriorityTransfer: false, // 🔹 explícito: no priorizar
+      timestamp: Date.now(),
+    };
+
+    // 🔹 Solo notifica al room del servicio destino y a las TVs
+    io.to(room).emit('ticket-transferred', payload);
+    io.to('tv').emit('ticket-transferred', payload);
+
+    console.log(`[socket] Ticket ${enrichedTicket.correlativo} transferido a ${destPrefix} → en cola (no prioritario)`);
+
+    // 🔹 Pero sí libera la ventanilla de origen para continuar
+    if (fromCashierId) {
+      const originPrefix = await getPrefixByCashierId(fromCashierId);
+      if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
+    }
+  } catch (e) {
+    console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
+  }
+},
+
 
   redistributeTickets: async (prefix) => {
     try {
