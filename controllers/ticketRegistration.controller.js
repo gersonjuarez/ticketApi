@@ -918,7 +918,7 @@ exports.transfer = async (req, res) => {
       Number(req.params.id) || Number(req.body.idTicketRegistration);
     const {
       toCashierId,
-      keepOriginalNumber = false,
+      keepOriginalNumber = true, // 🔹 Por defecto mantiene su número
       fromCashierId = null,
     } = req.body;
 
@@ -927,7 +927,6 @@ exports.transfer = async (req, res) => {
       toCashierId,
       fromCashierId,
       keepOriginalNumber,
-      body: req.body,
     });
 
     if (!idTicketRegistration || !toCashierId)
@@ -961,109 +960,27 @@ exports.transfer = async (req, res) => {
       destino: prefixDestino,
     });
 
-    // =======================
-    // 📅 Fecha local Guatemala (Node 22-safe)
-    // =======================
-    let utcToZonedTime, format;
-    try {
-      const tz = require('date-fns-tz');
-      if (tz.default && tz.default.utcToZonedTime) {
-        utcToZonedTime = tz.default.utcToZonedTime;
-        format = tz.default.format;
-      } else if (tz.utcToZonedTime) {
-        utcToZonedTime = tz.utcToZonedTime;
-        format = tz.format;
-      } else if (typeof tz === 'function') {
-        utcToZonedTime = tz;
-        format = (d) => d.toISOString().slice(0, 10);
-      } else {
-        throw new Error('date-fns-tz no exporta funciones válidas');
-      }
-    } catch (err) {
-      console.error('[transfer] ⚠️ Error cargando date-fns-tz:', err);
-      utcToZonedTime = (d) => d; // fallback directo
-      format = (d) => d.toISOString().slice(0, 10);
-    }
-
-    const nowGuatemala = utcToZonedTime(new Date(), 'America/Guatemala');
-    const todayStr = format(nowGuatemala, 'yyyy-MM-dd', {
-      timeZone: 'America/Guatemala',
-    });
-    console.log('[transfer] 📅 Fecha usada para control de duplicado:', todayStr);
-
     // 🔹 Cerrar asistencias abiertas
-    const [closedCount] = await TicketAttendance.update(
+    await TicketAttendance.update(
       { endedAt: new Date() },
       {
         where: { idTicket: ticket.idTicketRegistration, endedAt: null },
         transaction,
       }
     );
-    console.log(`[transfer] ⏱️ Asistencias cerradas: ${closedCount}`);
 
-    // 🔹 Cambiar servicio y resetear datos
+    console.log('[transfer] ⏱️ Asistencias cerradas.');
+
+    // 🔹 Mantener número y correlativo
     ticket.idService = serviceDestinoId;
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
     ticket.forcedToCashierId = null;
     ticket.updatedAt = new Date();
 
-    // =====================================================
-    // 🧩 Verificar duplicado por día actual (sin turnDate)
-    // =====================================================
-    const existing = await TicketRegistration.findOne({
-      where: {
-        idService: serviceDestinoId,
-        turnNumber: ticket.turnNumber,
-        createdAt: {
-          [Op.gte]: new Date(`${todayStr}T00:00:00`),
-          [Op.lte]: new Date(`${todayStr}T23:59:59`),
-        },
-      },
-      transaction,
-    });
-
-    if (existing) {
-      const maxTurn = await TicketRegistration.max('turnNumber', {
-        where: {
-          idService: serviceDestinoId,
-          createdAt: {
-            [Op.gte]: new Date(`${todayStr}T00:00:00`),
-            [Op.lte]: new Date(`${todayStr}T23:59:59`),
-          },
-        },
-        transaction,
-      });
-      ticket.turnNumber = (maxTurn || 0) + 1;
-      ticket.correlativo = `${prefixDestino}-${String(
-        ticket.turnNumber
-      ).padStart(3, '0')}`;
-      console.log(
-        `[transfer] ⚠️ Duplicado detectado, nuevo turnNumber: ${ticket.turnNumber}`
-      );
-    } else if (!keepOriginalNumber) {
-      const maxTurn = await TicketRegistration.max('turnNumber', {
-        where: {
-          idService: serviceDestinoId,
-          createdAt: {
-            [Op.gte]: new Date(`${todayStr}T00:00:00`),
-            [Op.lte]: new Date(`${todayStr}T23:59:59`),
-          },
-        },
-        transaction,
-      });
-      ticket.turnNumber = (maxTurn || 0) + 1;
-      ticket.correlativo = `${prefixDestino}-${String(
-        ticket.turnNumber
-      ).padStart(3, '0')}`;
-      console.log(
-        `[transfer] 🔄 Nuevo correlativo generado: ${ticket.correlativo}`
-      );
-    } else {
-      console.log(
-        `[transfer] ✅ Manteniendo número original: ${ticket.turnNumber}`
-      );
-    }
+    // ⚙️ Mantiene correlativo original (ya no genera uno nuevo)
+    ticket.correlativo = ticket.correlativo;
+    ticket.turnNumber = ticket.turnNumber;
 
     await ticket.save({ transaction });
     console.log('[transfer] 💾 Ticket actualizado correctamente.');
@@ -1081,7 +998,6 @@ exports.transfer = async (req, res) => {
     );
 
     await transaction.commit();
-    console.log('[transfer] ✅ Transacción completada.');
 
     // 🔹 Emitir evento a sockets
     const socketModule = require('../server/socket');
@@ -1092,11 +1008,11 @@ exports.transfer = async (req, res) => {
       true
     );
 
-    console.log('[transfer] 📡 Evento emitido.');
+    console.log('[transfer] ✅ Transferencia completada sin duplicados.');
 
     return res.json({
       ok: true,
-      message: 'Ticket transferido al final de la cola del nuevo servicio.',
+      message: 'Ticket transferido correctamente manteniendo su número.',
       ticket,
     });
   } catch (e) {
@@ -1109,5 +1025,3 @@ exports.transfer = async (req, res) => {
     });
   }
 };
-
-
