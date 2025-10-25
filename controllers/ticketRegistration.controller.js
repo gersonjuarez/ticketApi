@@ -943,33 +943,32 @@ await TicketAttendance.update(
 );
 
     // 🔹 Cambiar servicio, estado y liberar cajero
-    ticket.idService = serviceDestinoId;
-    ticket.idCashier = null;
-    ticket.idTicketStatus = 1; // Pendiente
-    ticket.forcedToCashierId = null;
-    ticket.updatedAt = new Date();
+ ticket.idService = serviceDestinoId;
+ticket.idCashier = null;
+ticket.idTicketStatus = 1; // Pendiente
+ticket.forcedToCashierId = null;
+ticket.updatedAt = new Date();
 
     // 🔹 Si no mantiene número, obtiene nuevo correlativo
-    if (!keepOriginalNumber) {
-      const maxTurn = await TicketRegistration.max('turnNumber', {
-        where: { idService: serviceDestinoId },
-        transaction,
-      });
-      ticket.turnNumber = (maxTurn || 0) + 1;
-      ticket.correlativo = `${prefixDestino}-${String(ticket.turnNumber).padStart(3, '0')}`;
-    }
+if (!keepOriginalNumber) {
+  const maxTurn = await TicketRegistration.max('turnNumber', {
+    where: { idService: serviceDestinoId },
+    transaction,
+  });
+  ticket.turnNumber = (maxTurn || 0) + 1;
+  ticket.correlativo = `${prefixDestino}-${String(ticket.turnNumber).padStart(3, '0')}`;
+}
 
     await ticket.save({ transaction });
 
     // 🔹 Log histórico
-    await TicketHistory.create({
-      idTicketRegistration,
-      action: 'TRANSFER',
-      description: `Transferido de ${ticket.Service?.prefix} a ${prefixDestino}`,
-      fromCashierId,
-      toCashierId,
-      timestamp: new Date(),
-    }, { transaction });
+await TicketHistory.create({
+  idTicket: idTicketRegistration,
+  fromStatus: STATUS.EN_ATENCION,
+  toStatus: STATUS.PENDIENTE, // vuelve a pendiente
+  changedByUser: fromCashierId || 1,
+  timestamp: new Date(),
+}, { transaction });
 
     await transaction.commit();
 
