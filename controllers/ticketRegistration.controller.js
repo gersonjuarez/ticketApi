@@ -964,13 +964,31 @@ exports.transfer = async (req, res) => {
     // =======================
     // 📅 Fecha local Guatemala (Node 22-safe)
     // =======================
-    const tz = require('date-fns-tz');
-    const { utcToZonedTime, format } = tz.default || tz;
+    let utcToZonedTime, format;
+    try {
+      const tz = require('date-fns-tz');
+      if (tz.default && tz.default.utcToZonedTime) {
+        utcToZonedTime = tz.default.utcToZonedTime;
+        format = tz.default.format;
+      } else if (tz.utcToZonedTime) {
+        utcToZonedTime = tz.utcToZonedTime;
+        format = tz.format;
+      } else if (typeof tz === 'function') {
+        utcToZonedTime = tz;
+        format = (d) => d.toISOString().slice(0, 10);
+      } else {
+        throw new Error('date-fns-tz no exporta funciones válidas');
+      }
+    } catch (err) {
+      console.error('[transfer] ⚠️ Error cargando date-fns-tz:', err);
+      utcToZonedTime = (d) => d; // fallback directo
+      format = (d) => d.toISOString().slice(0, 10);
+    }
+
     const nowGuatemala = utcToZonedTime(new Date(), 'America/Guatemala');
     const todayStr = format(nowGuatemala, 'yyyy-MM-dd', {
       timeZone: 'America/Guatemala',
     });
-
     console.log('[transfer] 📅 Fecha usada para control de duplicado:', todayStr);
 
     // 🔹 Cerrar asistencias abiertas
@@ -1091,4 +1109,5 @@ exports.transfer = async (req, res) => {
     });
   }
 };
+
 
