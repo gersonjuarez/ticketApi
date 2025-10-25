@@ -937,10 +937,10 @@ if (!idTicketRegistration || !toCashierId)
     const serviceDestinoId = cashierDestino.Service.idService;
 
     // 🔹 Cerrar ticket actual
-    await TicketAttendance.update(
-      { endedAt: new Date() },
-      { where: { idTicketRegistration: ticket.idTicketRegistration, endedAt: null }, transaction }
-    );
+await TicketAttendance.update(
+  { endedAt: new Date() },
+  { where: { idTicket: ticket.idTicketRegistration, endedAt: null }, transaction }
+);
 
     // 🔹 Cambiar servicio, estado y liberar cajero
     ticket.idService = serviceDestinoId;
