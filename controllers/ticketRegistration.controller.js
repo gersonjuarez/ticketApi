@@ -12,7 +12,7 @@ const {
   sequelize,
 } = require("../models");
 const Attendance = require("../services/attendance.service");
-
+const { zonedTimeToUtc, utcToZonedTime, format } = require('date-fns-tz');
 // Helpers nuevos (asegúrate de tener los archivos en utils/)
 const { getNextTurnNumber, padN } = require("../utils/turnNumbers");
 const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
@@ -934,7 +934,6 @@ exports.transfer = async (req, res) => {
         .status(400)
         .json({ ok: false, message: 'Parámetros incompletos.' });
 
-    // 🔹 Buscar ticket
     const ticket = await TicketRegistration.findByPk(idTicketRegistration, {
       include: [{ model: Service, attributes: ['idService', 'prefix'] }],
       transaction,
@@ -943,15 +942,6 @@ exports.transfer = async (req, res) => {
     if (ticket.idTicketStatus !== 2)
       throw new Error('Solo se pueden transferir tickets en atención.');
 
-    console.log('[transfer] 🎟️ Ticket encontrado:', {
-      id: ticket.idTicketRegistration,
-      status: ticket.idTicketStatus,
-      prefix: ticket.Service?.prefix,
-      turnNumber: ticket.turnNumber,
-      turnDate: ticket.turnDate,
-    });
-
-    // 🔹 Buscar cajero destino
     const cashierDestino = await Cashier.findByPk(toCashierId, {
       include: [{ model: Service, attributes: ['idService', 'prefix'] }],
       transaction,
@@ -961,13 +951,20 @@ exports.transfer = async (req, res) => {
     const prefixDestino = cashierDestino.Service.prefix;
     const serviceDestinoId = cashierDestino.Service.idService;
 
-    console.log('[transfer] 🧭 Cajero destino encontrado:', {
-      idCashier: toCashierId,
-      prefixDestino,
-      serviceDestinoId,
+    console.log('[transfer] 🎟️ Ticket:', {
+      id: ticket.idTicketRegistration,
+      turnNumber: ticket.turnNumber,
+      currentService: ticket.Service?.prefix,
+      destino: prefixDestino,
     });
 
-    // 🔹 Cerrar ticket actual en asistencia
+    // Fecha del día en Guatemala (YYYY-MM-DD)
+    const nowGuatemala = utcToZonedTime(new Date(), 'America/Guatemala');
+    const todayStr = format(nowGuatemala, 'yyyy-MM-dd');
+
+    console.log('[transfer] 📅 Fecha usada para control de duplicado:', todayStr);
+
+    // 🔹 Cerrar asistencia
     const [closedCount] = await TicketAttendance.update(
       { endedAt: new Date() },
       {
@@ -975,7 +972,6 @@ exports.transfer = async (req, res) => {
         transaction,
       }
     );
-    console.log(`[transfer] ⏱️ Asistencias cerradas: ${closedCount}`);
 
     // 🔹 Cambiar servicio, estado y liberar cajero
     ticket.idService = serviceDestinoId;
@@ -985,20 +981,29 @@ exports.transfer = async (req, res) => {
     ticket.updatedAt = new Date();
 
     // ==========================================================
-    // 🧩 NUEVO BLOQUE: evita duplicados en uq_ticket_turn
+    // 🧩 Verificar duplicado sin usar turnDate (por día actual)
     // ==========================================================
     const existing = await TicketRegistration.findOne({
       where: {
         idService: serviceDestinoId,
-        turnDate: ticket.turnDate,
         turnNumber: ticket.turnNumber,
+        createdAt: {
+          [Op.gte]: new Date(`${todayStr}T00:00:00`),
+          [Op.lte]: new Date(`${todayStr}T23:59:59`),
+        },
       },
       transaction,
     });
 
     if (existing) {
       const maxTurn = await TicketRegistration.max('turnNumber', {
-        where: { idService: serviceDestinoId, turnDate: ticket.turnDate },
+        where: {
+          idService: serviceDestinoId,
+          createdAt: {
+            [Op.gte]: new Date(`${todayStr}T00:00:00`),
+            [Op.lte]: new Date(`${todayStr}T23:59:59`),
+          },
+        },
         transaction,
       });
       ticket.turnNumber = (maxTurn || 0) + 1;
@@ -1010,7 +1015,13 @@ exports.transfer = async (req, res) => {
       );
     } else if (!keepOriginalNumber) {
       const maxTurn = await TicketRegistration.max('turnNumber', {
-        where: { idService: serviceDestinoId, turnDate: ticket.turnDate },
+        where: {
+          idService: serviceDestinoId,
+          createdAt: {
+            [Op.gte]: new Date(`${todayStr}T00:00:00`),
+            [Op.lte]: new Date(`${todayStr}T23:59:59`),
+          },
+        },
         transaction,
       });
       ticket.turnNumber = (maxTurn || 0) + 1;
@@ -1025,12 +1036,10 @@ exports.transfer = async (req, res) => {
         `[transfer] ✅ Manteniendo número original: ${ticket.turnNumber}`
       );
     }
-    // ==========================================================
 
     await ticket.save({ transaction });
     console.log('[transfer] 💾 Ticket actualizado correctamente.');
 
-    // 🔹 Log histórico
     await TicketHistory.create(
       {
         idTicket: idTicketRegistration,
@@ -1041,12 +1050,10 @@ exports.transfer = async (req, res) => {
       },
       { transaction }
     );
-    console.log('[transfer] 🧾 TicketHistory creado correctamente.');
 
     await transaction.commit();
     console.log('[transfer] ✅ Transacción completada y confirmada.');
 
-    // 🔹 Emitir evento a sockets
     await socketModule.notifyTicketTransferred(
       ticket,
       fromCashierId,
@@ -1062,15 +1069,7 @@ exports.transfer = async (req, res) => {
     });
   } catch (e) {
     if (transaction) await transaction.rollback();
-
-    // 🔥 Log detallado del error
-    console.error('[transfer] ❌ Error completo:');
-    console.error(e);
-    console.error('----------------------------------');
-    console.error('Nombre:', e.name);
-    console.error('Mensaje:', e.message);
-    if (e.errors) console.error('Detalles:', e.errors.map((er) => er.message));
-
+    console.error('[transfer] ❌ Error completo:', e);
     return res.status(500).json({
       ok: false,
       message: e.message,
