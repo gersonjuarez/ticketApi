@@ -913,11 +913,11 @@ exports.findAllLive = async (req, res) => {
 exports.transfer = async (req, res) => {
   const transaction = await sequelize.transaction();
   try {
-    const { idTicketRegistration, toCashierId, keepOriginalNumber = false } = req.body;
-    const fromCashierId = Number(req.body.fromCashierId) || null;
+const idTicketRegistration = Number(req.params.id) || Number(req.body.idTicketRegistration);
+const { toCashierId, keepOriginalNumber = false, fromCashierId = null } = req.body;
 
-    if (!idTicketRegistration || !toCashierId)
-      return res.status(400).json({ ok: false, message: 'Parámetros incompletos.' });
+if (!idTicketRegistration || !toCashierId)
+  return res.status(400).json({ ok: false, message: 'Parámetros incompletos.' });
 
     const ticket = await TicketRegistration.findByPk(idTicketRegistration, {
       include: [{ model: Service, attributes: ['idService', 'prefix'] }],
