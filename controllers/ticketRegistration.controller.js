@@ -931,10 +931,12 @@ exports.transfer = async (req, res) => {
       comment,
     });
 
-    if (!idTicketRegistration || !toCashierId)
+    if (!idTicketRegistration || !toCashierId) {
+      await transaction.rollback();
       return res
         .status(400)
-        .json({ ok: false, message: "Parámetros incompletos." });
+        .json({ ok: false, message: "Parámetros incompletos: idTicketRegistration y toCashierId son requeridos." });
+    }
 
     // 🔹 Buscar ticket original
     const ticket = await TicketRegistration.findByPk(idTicketRegistration, {
@@ -946,7 +948,7 @@ exports.transfer = async (req, res) => {
     if (ticket.idTicketStatus !== STATUS.EN_ATENCION)
       throw new Error("Solo se pueden transferir tickets en atención.");
 
-    // 🔹 Buscar cajero destino y servicio
+    // 🔹 Buscar cajero destino y su servicio asociado
     const cashierDestino = await Cashier.findByPk(toCashierId, {
       include: [{ model: Service, attributes: ["idService", "prefix"] }],
       transaction,
@@ -962,7 +964,7 @@ exports.transfer = async (req, res) => {
       prefixDestino,
     });
 
-    // 🔹 Cerrar asistencias activas
+    // 🔹 Cerrar asistencias activas (si existen)
     const [closedCount] = await TicketAttendance.update(
       { endedAt: new Date() },
       {
@@ -972,7 +974,7 @@ exports.transfer = async (req, res) => {
     );
     console.log(`[transfer] ⏱️ Asistencias cerradas: ${closedCount}`);
 
-    // 🔹 Actualizar solo lo necesario (manteniendo número y fecha)
+    // 🔹 Actualizar ticket (sin alterar número ni fecha)
     ticket.idService = serviceDestinoId;
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
@@ -994,11 +996,14 @@ exports.transfer = async (req, res) => {
       { transaction }
     );
 
-    // 🔹 Registrar log de transferencia (opcional si tienes tabla)
+    // 🔹 Registrar log de transferencia (✅ corregido)
     if (TicketTransferLog) {
       await TicketTransferLog.create(
         {
-          idTicket: idTicketRegistration,
+          idTicketRegistration, // ✅ obligatorio
+          idTicket: idTicketRegistration, // (si tu modelo también lo tiene)
+          fromService: ticket.idService,
+          toService: serviceDestinoId,
           fromCashierId,
           toCashierId,
           performedByUserId,
@@ -1014,12 +1019,14 @@ exports.transfer = async (req, res) => {
 
     // 🔹 Notificar por sockets
     const socketModule = require("../server/socket");
-    await socketModule.notifyTicketTransferred(
-      ticket,
-      fromCashierId,
-      toCashierId,
-      true
-    );
+    if (socketModule.notifyTicketTransferred) {
+      await socketModule.notifyTicketTransferred(
+        ticket,
+        fromCashierId,
+        toCashierId,
+        true
+      );
+    }
 
     return res.json({
       ok: true,
@@ -1032,7 +1039,7 @@ exports.transfer = async (req, res) => {
     return res.status(500).json({
       ok: false,
       message: e.message,
-      details: e.errors?.map((er) => er.message),
+      details: e.errors?.map((er) => er.message) || null,
     });
   }
 };
