@@ -13,8 +13,7 @@ const {
 } = require("../models");
 const Attendance = require("../services/attendance.service");
 const tz = require('date-fns-tz');
-const nowGuatemala = tz.utcToZonedTime(new Date(), 'America/Guatemala');
-const todayStr = tz.format(nowGuatemala, 'yyyy-MM-dd', { timeZone: 'America/Guatemala' });
+
 // Helpers nuevos (asegúrate de tener los archivos en utils/)
 const { getNextTurnNumber, padN } = require("../utils/turnNumbers");
 const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
