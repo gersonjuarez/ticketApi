@@ -910,15 +910,25 @@ exports.findAllLive = async (req, res) => {
 // ============================================
 // TRANSFERENCIA DE TICKET ENTRE SERVICIOS/CAJEROS
 // ============================================
+// controllers/ticketRegistrationController.js
 exports.transfer = async (req, res) => {
   const transaction = await sequelize.transaction();
   try {
-const idTicketRegistration = Number(req.params.id) || Number(req.body.idTicketRegistration);
-const { toCashierId, keepOriginalNumber = false, fromCashierId = null } = req.body;
+    const idTicketRegistration = Number(req.params.id) || Number(req.body.idTicketRegistration);
+    const { toCashierId, keepOriginalNumber = false, fromCashierId = null } = req.body;
 
-if (!idTicketRegistration || !toCashierId)
-  return res.status(400).json({ ok: false, message: 'Parámetros incompletos.' });
+    console.log('[transfer] 🔹 Payload recibido:', {
+      idTicketRegistration,
+      toCashierId,
+      fromCashierId,
+      keepOriginalNumber,
+      body: req.body,
+    });
 
+    if (!idTicketRegistration || !toCashierId)
+      return res.status(400).json({ ok: false, message: 'Parámetros incompletos.' });
+
+    // 🔹 Buscar ticket
     const ticket = await TicketRegistration.findByPk(idTicketRegistration, {
       include: [{ model: Service, attributes: ['idService', 'prefix'] }],
       transaction,
@@ -927,6 +937,13 @@ if (!idTicketRegistration || !toCashierId)
     if (ticket.idTicketStatus !== 2)
       throw new Error('Solo se pueden transferir tickets en atención.');
 
+    console.log('[transfer] 🎟️ Ticket encontrado:', {
+      id: ticket.idTicketRegistration,
+      status: ticket.idTicketStatus,
+      prefix: ticket.Service?.prefix,
+    });
+
+    // 🔹 Buscar cajero destino
     const cashierDestino = await Cashier.findByPk(toCashierId, {
       include: [{ model: Service, attributes: ['idService', 'prefix'] }],
       transaction,
@@ -936,44 +953,61 @@ if (!idTicketRegistration || !toCashierId)
     const prefixDestino = cashierDestino.Service.prefix;
     const serviceDestinoId = cashierDestino.Service.idService;
 
-    // 🔹 Cerrar ticket actual
-await TicketAttendance.update(
-  { endedAt: new Date() },
-  { where: { idTicket: ticket.idTicketRegistration, endedAt: null }, transaction }
-);
+    console.log('[transfer] 🧭 Cajero destino encontrado:', {
+      idCashier: toCashierId,
+      prefixDestino,
+      serviceDestinoId,
+    });
+
+    // 🔹 Cerrar ticket actual en asistencia
+    const [closedCount] = await TicketAttendance.update(
+      { endedAt: new Date() },
+      { where: { idTicket: ticket.idTicketRegistration, endedAt: null }, transaction }
+    );
+
+    console.log(`[transfer] ⏱️ Asistencias cerradas: ${closedCount}`);
 
     // 🔹 Cambiar servicio, estado y liberar cajero
- ticket.idService = serviceDestinoId;
-ticket.idCashier = null;
-ticket.idTicketStatus = 1; // Pendiente
-ticket.forcedToCashierId = null;
-ticket.updatedAt = new Date();
+    ticket.idService = serviceDestinoId;
+    ticket.idCashier = null;
+    ticket.idTicketStatus = 1; // Pendiente
+    ticket.forcedToCashierId = null;
+    ticket.updatedAt = new Date();
 
     // 🔹 Si no mantiene número, obtiene nuevo correlativo
-if (!keepOriginalNumber) {
-  const maxTurn = await TicketRegistration.max('turnNumber', {
-    where: { idService: serviceDestinoId },
-    transaction,
-  });
-  ticket.turnNumber = (maxTurn || 0) + 1;
-  ticket.correlativo = `${prefixDestino}-${String(ticket.turnNumber).padStart(3, '0')}`;
-}
+    if (!keepOriginalNumber) {
+      const maxTurn = await TicketRegistration.max('turnNumber', {
+        where: { idService: serviceDestinoId },
+        transaction,
+      });
+      ticket.turnNumber = (maxTurn || 0) + 1;
+      ticket.correlativo = `${prefixDestino}-${String(ticket.turnNumber).padStart(3, '0')}`;
+      console.log('[transfer] 🔄 Nuevo correlativo generado:', ticket.correlativo);
+    }
 
     await ticket.save({ transaction });
+    console.log('[transfer] 💾 Ticket actualizado correctamente.');
 
-    // 🔹 Log histórico
-await TicketHistory.create({
-  idTicket: idTicketRegistration,
-  fromStatus: STATUS.EN_ATENCION,
-  toStatus: STATUS.PENDIENTE, // vuelve a pendiente
-  changedByUser: fromCashierId || 1,
-  timestamp: new Date(),
-}, { transaction });
+    // 🔹 Log histórico (ajustado a tu modelo real)
+    await TicketHistory.create(
+      {
+        idTicket: idTicketRegistration,
+        fromStatus: STATUS.EN_ATENCION,
+        toStatus: STATUS.PENDIENTE,
+        changedByUser: req.body.performedByUserId || 1,
+        timestamp: new Date(),
+      },
+      { transaction }
+    );
+
+    console.log('[transfer] 🧾 TicketHistory creado correctamente.');
 
     await transaction.commit();
+    console.log('[transfer] ✅ Transacción completada y confirmada.');
 
-    // 🔹 Emitir a sockets: SOLO "en cola", sin prioridad
+    // 🔹 Emitir evento a sockets
     await socketModule.notifyTicketTransferred(ticket, fromCashierId, toCashierId, true);
+    console.log('[transfer] 📡 Evento de transferencia emitido.');
 
     return res.json({
       ok: true,
@@ -982,7 +1016,19 @@ await TicketHistory.create({
     });
   } catch (e) {
     if (transaction) await transaction.rollback();
-    console.error('[transfer] error:', e.message);
-    return res.status(500).json({ ok: false, message: e.message });
+
+    // 🔥 Log detallado del error (incluye nombre, tipo y validaciones)
+    console.error('[transfer] ❌ Error completo:');
+    console.error(e);
+    console.error('----------------------------------');
+    console.error('Nombre:', e.name);
+    console.error('Mensaje:', e.message);
+    if (e.errors) console.error('Detalles:', e.errors.map(er => er.message));
+
+    return res.status(500).json({
+      ok: false,
+      message: e.message,
+      details: e.errors?.map(er => er.message),
+    });
   }
 };
