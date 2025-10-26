@@ -952,7 +952,7 @@ exports.transfer = async (req, res) => {
     if (ticket.idTicketStatus !== STATUS.EN_ATENCION)
       throw new Error("Solo se pueden transferir tickets en atención.");
 
-    // 🔹 Guardar el servicio original ANTES de cambiarlo
+    // 🔹 Guardar servicio original antes de cambiarlo
     const fromServiceId = ticket.idService;
 
     // 🔹 Buscar cajero destino y su servicio asociado
@@ -981,15 +981,23 @@ exports.transfer = async (req, res) => {
     );
     console.log(`[transfer] ⏱️ Asistencias cerradas: ${closedCount}`);
 
-    // 🔹 Actualizar ticket (sin alterar número ni fecha)
+    // 🔹 Obtener el siguiente número de turno del servicio destino
+    const { getNextTurnNumber, padN } = require("../utils/turnNumbers");
+    const nextTurnNumber = await getNextTurnNumber(serviceDestinoId, transaction);
+
+    // 🔹 Actualizar ticket (nuevo número, nueva cola, sin prioridad)
     ticket.idService = serviceDestinoId;
+    ticket.turnNumber = nextTurnNumber;
+    ticket.correlativo = `${prefixDestino}-${padN(nextTurnNumber, 3)}`;
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
-    ticket.forcedToCashierId = null; // puedes cambiarlo si quieres forzar al nuevo cajero
+    ticket.forcedToCashierId = null; // 🔹 sin prioridad, entra al fondo
     ticket.updatedAt = new Date();
 
     await ticket.save({ transaction });
-    console.log("[transfer] 💾 Ticket actualizado (sin modificar número ni fecha).");
+    console.log(
+      `[transfer] 💾 Ticket actualizado con nuevo número (${ticket.correlativo}) para ${prefixDestino}.`
+    );
 
     // 🔹 Registrar historial
     await TicketHistory.create(
@@ -1008,7 +1016,7 @@ exports.transfer = async (req, res) => {
       await TicketTransferLog.create(
         {
           idTicketRegistration, // ✅ obligatorio
-          fromService: fromServiceId, // ✅ ahora correcto
+          fromService: fromServiceId,
           toService: serviceDestinoId,
           fromCashierId,
           toCashierId,
@@ -1024,7 +1032,7 @@ exports.transfer = async (req, res) => {
     await transaction.commit();
     console.log("[transfer] ✅ Transferencia completada correctamente.");
 
-    // 🔹 Notificar por sockets (reenviar el ticket a la nueva cola)
+    // 🔹 Notificar por sockets (reenviar ticket al nuevo servicio y TV)
     const socketModule = require("../server/socket");
     const io = socketModule.getIo?.();
 
@@ -1062,7 +1070,7 @@ exports.transfer = async (req, res) => {
 
       console.log("[transfer] 📡 Ticket reenviado a la cola del nuevo servicio y TV.");
 
-      // 🔹 Reforzar redistribución del servicio destino (para que aparezca sin recargar)
+      // 🔹 Reforzar redistribución (para que se actualice la cola sin recargar)
       if (socketModule.redistributeTickets) {
         await socketModule.redistributeTickets(prefixDestino);
         console.log(`[transfer] 🔁 Redistribución forzada para ${prefixDestino}`);
@@ -1071,7 +1079,7 @@ exports.transfer = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Ticket transferido manteniendo número original.",
+      message: "Ticket transferido al final de la cola del nuevo servicio.",
       ticket,
     });
   } catch (e) {
