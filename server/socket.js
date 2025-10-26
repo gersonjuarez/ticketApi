@@ -1231,12 +1231,11 @@ const tickets = await TicketRegistration.findAll({
     idService: serviceId,
     status: true,
   },
-  order: [
-    ['turnNumber', 'ASC'],
-    ['createdAt', 'ASC'],
-    ['updatedAt', 'ASC'],
-    ['transferredAt', 'ASC'], // ✅ garantiza que los trasladados vayan al final
-  ],
+order: [
+  [Sequelize.literal('CASE WHEN transferredAt IS NULL THEN 0 ELSE 1 END'), 'ASC'],
+  ['createdAt', 'ASC'],
+  ['turnNumber', 'ASC']
+]
 });
 
       if (tickets.length === 0) {
