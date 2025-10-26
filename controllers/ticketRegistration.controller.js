@@ -759,28 +759,44 @@ exports.update = async (req, res) => {
 
         io2.to("tv").emit("ticket-assigned", assignedPayload);
 
-      } else if (newStatus === STATUS.COMPLETADO) {
-        const room = updatedTicket.Service.prefix.toLowerCase();
-        const completedPayload = {
-          ticket: payload,
-          completedByCashier: currentTicket.idCashier,
-          previousStatus: currentTicket.idTicketStatus,
-          timestamp: Date.now(),
-        };
-        io2.to(room).emit("ticket-completed", completedPayload);
-        io2.to("tv").emit("ticket-completed", completedPayload);
+     } else if (newStatus === STATUS.COMPLETADO) {
+  const room = updatedTicket.Service.prefix.toLowerCase();
+  const completedPayload = {
+    ticket: payload,
+    completedByCashier: currentTicket.idCashier,
+    previousStatus: currentTicket.idTicketStatus,
+    timestamp: Date.now(),
+  };
+  io2.to(room).emit("ticket-completed", completedPayload);
+  io2.to("tv").emit("ticket-completed", completedPayload);
+// 🔁 Refrescar la cola del servicio completado
+const socketModule = require("../server/socket");
+if (socketModule.redistributeTickets) {
+  await socketModule.redistributeTickets(updatedTicket.Service.prefix);
+  io2.to(room).emit("queue-updated");
+  io2.to("tv").emit("queue-updated");
+  console.log(`[update] 🔁 Redistribución después de COMPLETADO en ${updatedTicket.Service.prefix}`);
+}
+    } else if (newStatus === STATUS.CANCELADO) {
+  const room = updatedTicket.Service.prefix.toLowerCase();
+  const cancelledPayload = {
+    ticket: payload,
+    cancelledByCashier: currentTicket.idCashier,
+    previousStatus: currentTicket.idTicketStatus,
+    timestamp: Date.now(),
+  };
+  io2.to(room).emit("ticket-cancelled", cancelledPayload);
+  io2.to("tv").emit("ticket-cancelled", cancelledPayload);
 
-      } else if (newStatus === STATUS.CANCELADO) {
-        const room = updatedTicket.Service.prefix.toLowerCase();
-        const cancelledPayload = {
-          ticket: payload,
-          cancelledByCashier: currentTicket.idCashier,
-          previousStatus: currentTicket.idTicketStatus,
-          timestamp: Date.now(),
-        };
-        io2.to(room).emit("ticket-cancelled", cancelledPayload);
-        io2.to("tv").emit("ticket-cancelled", cancelledPayload);
-      }
+  // 🔁 Refrescar la cola del servicio cancelado
+  const socketModule = require("../server/socket");
+  if (socketModule.redistributeTickets) {
+    await socketModule.redistributeTickets(updatedTicket.Service.prefix);
+    io2.to(room).emit("queue-updated");
+    io2.to("tv").emit("queue-updated");
+    console.log(`[update] 🔁 Redistribución después de CANCELADO en ${updatedTicket.Service.prefix}`);
+  }
+}
 
       io2.emit("ticket-updated", payload);
     }
@@ -970,7 +986,7 @@ exports.transfer = async (req, res) => {
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
     ticket.forcedToCashierId = null;
-    ticket.transferredAt = new Date(); // ✅ NUEVO: marca traslado
+    ticket.transferredAt = new Date(); // ✅ marca traslado
     ticket.updatedAt = new Date();
 
     await ticket.save({ transaction });
@@ -1033,6 +1049,14 @@ exports.transfer = async (req, res) => {
           from: fromServiceId,
           to: serviceDestinoId,
         });
+      }
+
+      // 🔁 Refrescar automáticamente la cola del servicio destino y TV
+      if (socketModule.redistributeTickets) {
+        await socketModule.redistributeTickets(prefixDestino);
+        io.to(roomDestino).emit("queue-updated");
+        io.to("tv").emit("queue-updated");
+        console.log(`[transfer] 🔁 Redistribución forzada para ${prefixDestino}`);
       }
     }
 

@@ -1229,9 +1229,14 @@ const tickets = await TicketRegistration.findAll({
   where: {
     idTicketStatus: 1,
     idService: serviceId,
-    status: true
+    status: true,
   },
-  order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+  order: [
+    ['turnNumber', 'ASC'],
+    ['createdAt', 'ASC'],
+    ['updatedAt', 'ASC'],
+    ['transferredAt', 'ASC'], // ✅ garantiza que los trasladados vayan al final
+  ],
 });
 
       if (tickets.length === 0) {
