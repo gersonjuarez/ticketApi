@@ -1159,46 +1159,38 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
 
     const room = String(destPrefix).toLowerCase();
 
+    // ✅ Emitir traslado (no new-ticket, solo notificación de cambio)
     const payload = {
       ticket: { ...enrichedTicket, modulo: String(toCashierId) },
       fromCashierId,
       toCashierId,
-      queued: true,
+      queued: true, // indica que debe ir al final
       timestamp: Date.now(),
     };
 
-    // 🔹 Emitir evento estándar (para historial)
     io.to(room).emit('ticket-transferred', payload);
     io.to('tv').emit('ticket-transferred', payload);
 
-    // 🔹 Reinyectar el ticket como "nuevo" para la cola y TV
-    const queuePayload = {
-      idTicketRegistration: enrichedTicket.idTicketRegistration,
-      turnNumber: enrichedTicket.turnNumber,
-      correlativo: enrichedTicket.correlativo,
-      prefix: enrichedTicket.prefix,
-      usuario: enrichedTicket.Client?.name || 'Sin cliente',
-      modulo: cashierTo?.Service?.name || enrichedTicket.Service?.name || 'Sin módulo',
-      createdAt: enrichedTicket.createdAt,
-      idTicketStatus: enrichedTicket.idTicketStatus,
-      idCashier: null,
-      idService: enrichedTicket.idService,
-      status: enrichedTicket.status,
-    };
+    console.log(`[socket] 🔁 Ticket ${enrichedTicket.correlativo} transferido → room:${room}`);
 
-    io.to(room).emit('new-ticket', queuePayload);
-    io.to('tv').emit('new-ticket', queuePayload);
+    // 🔹 Refrescar colas origen y destino (sin duplicar ticket)
+    if (module.exports.redistributeTickets) {
+      await module.exports.redistributeTickets(destPrefix);
+      if (fromCashierId) {
+        const originPrefix = await getPrefixByCashierId(fromCashierId);
+        if (originPrefix) await module.exports.redistributeTickets(originPrefix);
+      }
+    }
 
-    console.log(`[socket] 📡 Ticket ${enrichedTicket.correlativo} transferido → emitido a cola ${destPrefix}`);
-
-    // 🔹 Libera al cajero de origen para continuar con su siguiente
+    // 🔹 Actualizar vista del cajero origen
     if (fromCashierId) {
       const originPrefix = await getPrefixByCashierId(fromCashierId);
       if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
     }
 
-    // 🔹 Redistribuye para que los cajeros del destino se actualicen
-    await module.exports.redistributeTickets(destPrefix);
+    // 🔹 Emitir actualización general de colas (TV + servicios)
+    io.to(room).emit('queue-updated', { prefix: destPrefix });
+    io.to('tv').emit('queue-updated');
   } catch (e) {
     console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
   }

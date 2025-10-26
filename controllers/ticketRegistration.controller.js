@@ -981,7 +981,7 @@ exports.transfer = async (req, res) => {
       }
     );
 
-    // 🔹 Actualizar ticket
+    // 🔹 Actualizar ticket: no cambia número ni correlativo
     ticket.idService = serviceDestinoId;
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
@@ -1025,6 +1025,9 @@ exports.transfer = async (req, res) => {
 
     if (io) {
       const roomDestino = prefixDestino.toLowerCase();
+      const roomOrigen = ticket.Service.prefix.toLowerCase();
+
+      // 🎯 payload para socket
       const socketPayload = {
         idTicketRegistration: ticket.idTicketRegistration,
         turnNumber: ticket.turnNumber,
@@ -1038,31 +1041,48 @@ exports.transfer = async (req, res) => {
         idService: serviceDestinoId,
         status: ticket.status,
         forcedToCashierId: null,
+        transferredAt: ticket.transferredAt,
       };
 
-      io.to(roomDestino).emit("new-ticket", socketPayload);
-      io.to("tv").emit("new-ticket", socketPayload);
+      // 🚫 NO usar "new-ticket" (eso lo pone como prioridad)
+      // ✅ Emitimos "ticket-transferred" con flag queued
+      io.to(roomDestino).emit("ticket-transferred", {
+        ticket: socketPayload,
+        fromCashierId,
+        toCashierId,
+        queued: true, // 👉 indica que debe ir al final de la cola
+      });
 
-      if (fromCashierId) {
-        io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
-          ticketId: ticket.idTicketRegistration,
-          from: fromServiceId,
-          to: serviceDestinoId,
-        });
-      }
+      io.to("tv").emit("ticket-transferred", {
+        ticket: socketPayload,
+        queued: true,
+      });
 
-      // 🔁 Refrescar automáticamente la cola del servicio destino y TV
+      // 🔁 Redistribuye y actualiza las colas destino y origen
       if (socketModule.redistributeTickets) {
         await socketModule.redistributeTickets(prefixDestino);
-        io.to(roomDestino).emit("queue-updated");
+        await socketModule.redistributeTickets(roomOrigen);
+        io.to(roomDestino).emit("queue-updated", { prefix: prefixDestino });
+        io.to(roomOrigen).emit("queue-updated", { prefix: roomOrigen });
         io.to("tv").emit("queue-updated");
-        console.log(`[transfer] 🔁 Redistribución forzada para ${prefixDestino}`);
+        console.log(`[transfer] 🔁 Redistribución forzada entre ${roomOrigen} → ${roomDestino}`);
+      }
+
+      // 🔔 Notifica al cajero origen (para liberar su vista)
+      if (fromCashierId) {
+        io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
+          ticket: socketPayload,
+          fromCashierId,
+          toCashierId,
+          queued: false,
+        });
       }
     }
 
     return res.json({
       ok: true,
-      message: "Ticket transferido manteniendo número original (al final de la cola).",
+      message:
+        "Ticket transferido al final de la cola sin cambiar correlativo.",
       ticket,
     });
   } catch (e) {
