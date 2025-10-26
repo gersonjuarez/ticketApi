@@ -25,19 +25,21 @@ const buildOrderForCashier = (cashierId = 0) => {
     [
       sequelize.literal(`
         CASE
-          WHEN "forcedToCashierId" IS NULL THEN 0
-          WHEN "forcedToCashierId" = ${cid} THEN 1
-          ELSE 2
+          WHEN "forcedToCashierId" = ${cid} THEN 0   -- prioridad: reservados para mí
+          WHEN "forcedToCashierId" IS NULL THEN 1    -- luego los normales
+          ELSE 2                                     -- y al final los forzados a otros
         END
       `),
       "ASC",
     ],
-    ["idTicketStatus", "ASC"],
-    ["turnNumber", "ASC"],
+    ["idTicketStatus", "ASC"],       // pendientes primero
+    ["turnNumber", "ASC"],           // FIFO clásico dentro del servicio
     ["createdAt", "ASC"],
     ["updatedAt", "ASC"],
+    ["transferredAt", "ASC"],        // ✅ los trasladados van al final de la cola
   ];
 };
+
 
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
@@ -922,14 +924,6 @@ exports.transfer = async (req, res) => {
       comment = null,
     } = req.body;
 
-    console.log("[transfer] 🔹 Payload recibido:", {
-      idTicketRegistration,
-      toCashierId,
-      fromCashierId,
-      performedByUserId,
-      comment,
-    });
-
     if (!idTicketRegistration || !toCashierId) {
       await transaction.rollback();
       return res.status(400).json({
@@ -939,7 +933,6 @@ exports.transfer = async (req, res) => {
       });
     }
 
-    // 🔹 Buscar ticket original
     const ticket = await TicketRegistration.findByPk(idTicketRegistration, {
       include: [
         { model: Service, attributes: ["idService", "prefix", "name"] },
@@ -952,10 +945,8 @@ exports.transfer = async (req, res) => {
     if (ticket.idTicketStatus !== STATUS.EN_ATENCION)
       throw new Error("Solo se pueden transferir tickets en atención.");
 
-    // 🔹 Guardar servicio original antes de cambiarlo
     const fromServiceId = ticket.idService;
 
-    // 🔹 Buscar cajero destino y su servicio asociado
     const cashierDestino = await Cashier.findByPk(toCashierId, {
       include: [{ model: Service, attributes: ["idService", "prefix", "name"] }],
       transaction,
@@ -965,33 +956,25 @@ exports.transfer = async (req, res) => {
     const prefixDestino = cashierDestino.Service.prefix;
     const serviceDestinoId = cashierDestino.Service.idService;
 
-    console.log("[transfer] 🎯 Transferencia:", {
-      fromService: fromServiceId,
-      toService: serviceDestinoId,
-      prefixDestino,
-    });
-
-    // 🔹 Cerrar asistencias activas (si existen)
-    const [closedCount] = await TicketAttendance.update(
+    // 🔹 Cerrar asistencias activas
+    await TicketAttendance.update(
       { endedAt: new Date() },
       {
         where: { idTicket: idTicketRegistration, endedAt: null },
         transaction,
       }
     );
-    console.log(`[transfer] ⏱️ Asistencias cerradas: ${closedCount}`);
 
-    // 🔹 Actualizar ticket (mantiene su correlativo y número)
+    // 🔹 Actualizar ticket
     ticket.idService = serviceDestinoId;
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
-    ticket.forcedToCashierId = null; // 🔹 sin prioridad
-    ticket.updatedAt = new Date(); // 🔹 hace que quede al final por timestamp
+    ticket.forcedToCashierId = null;
+    ticket.transferredAt = new Date(); // ✅ NUEVO: marca traslado
+    ticket.updatedAt = new Date();
 
     await ticket.save({ transaction });
-    console.log("[transfer] 💾 Ticket actualizado (mantiene correlativo).");
 
-    // 🔹 Registrar historial
     await TicketHistory.create(
       {
         idTicket: idTicketRegistration,
@@ -1003,7 +986,6 @@ exports.transfer = async (req, res) => {
       { transaction }
     );
 
-    // 🔹 Registrar log de transferencia
     if (TicketTransferLog) {
       await TicketTransferLog.create(
         {
@@ -1018,23 +1000,19 @@ exports.transfer = async (req, res) => {
         },
         { transaction }
       );
-      console.log("[transfer] 🧾 Log de transferencia registrado correctamente.");
     }
 
     await transaction.commit();
-    console.log("[transfer] ✅ Transferencia completada correctamente.");
 
-    // 🔹 Notificar por sockets (reenviar ticket al nuevo servicio y TV)
     const socketModule = require("../server/socket");
     const io = socketModule.getIo?.();
 
     if (io) {
       const roomDestino = prefixDestino.toLowerCase();
-
       const socketPayload = {
         idTicketRegistration: ticket.idTicketRegistration,
         turnNumber: ticket.turnNumber,
-        correlativo: ticket.correlativo, // ✅ mantiene el mismo correlativo
+        correlativo: ticket.correlativo,
         prefix: prefixDestino,
         usuario: ticket.Client?.name || "Sin cliente",
         modulo: cashierDestino.Service.name,
@@ -1046,25 +1024,15 @@ exports.transfer = async (req, res) => {
         forcedToCashierId: null,
       };
 
-      // Enviar a los clientes del nuevo servicio y TV
       io.to(roomDestino).emit("new-ticket", socketPayload);
       io.to("tv").emit("new-ticket", socketPayload);
 
-      // Notificar opcionalmente al cajero origen
       if (fromCashierId) {
         io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
           ticketId: ticket.idTicketRegistration,
           from: fromServiceId,
           to: serviceDestinoId,
         });
-      }
-
-      console.log("[transfer] 📡 Ticket reenviado a la cola del nuevo servicio y TV.");
-
-      // 🔁 Refrescar la cola del nuevo servicio sin recargar
-      if (socketModule.redistributeTickets) {
-        await socketModule.redistributeTickets(prefixDestino);
-        console.log(`[transfer] 🔁 Redistribución forzada para ${prefixDestino}`);
       }
     }
 
@@ -1075,7 +1043,6 @@ exports.transfer = async (req, res) => {
     });
   } catch (e) {
     if (transaction) await transaction.rollback();
-    console.error("[transfer] ❌ Error completo:", e);
     return res.status(500).json({
       ok: false,
       message: e.message,
