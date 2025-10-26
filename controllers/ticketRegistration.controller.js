@@ -981,23 +981,15 @@ exports.transfer = async (req, res) => {
     );
     console.log(`[transfer] ⏱️ Asistencias cerradas: ${closedCount}`);
 
-    // 🔹 Obtener el siguiente número de turno del servicio destino
-    const { getNextTurnNumber, padN } = require("../utils/turnNumbers");
-    const nextTurnNumber = await getNextTurnNumber(serviceDestinoId, transaction);
-
-    // 🔹 Actualizar ticket (nuevo número, nueva cola, sin prioridad)
+    // 🔹 Actualizar ticket (mantiene su correlativo y número)
     ticket.idService = serviceDestinoId;
-    ticket.turnNumber = nextTurnNumber;
-    ticket.correlativo = `${prefixDestino}-${padN(nextTurnNumber, 3)}`;
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
-    ticket.forcedToCashierId = null; // 🔹 sin prioridad, entra al fondo
-    ticket.updatedAt = new Date();
+    ticket.forcedToCashierId = null; // 🔹 sin prioridad
+    ticket.updatedAt = new Date(); // 🔹 hace que quede al final por timestamp
 
     await ticket.save({ transaction });
-    console.log(
-      `[transfer] 💾 Ticket actualizado con nuevo número (${ticket.correlativo}) para ${prefixDestino}.`
-    );
+    console.log("[transfer] 💾 Ticket actualizado (mantiene correlativo).");
 
     // 🔹 Registrar historial
     await TicketHistory.create(
@@ -1015,7 +1007,7 @@ exports.transfer = async (req, res) => {
     if (TicketTransferLog) {
       await TicketTransferLog.create(
         {
-          idTicketRegistration, // ✅ obligatorio
+          idTicketRegistration,
           fromService: fromServiceId,
           toService: serviceDestinoId,
           fromCashierId,
@@ -1039,11 +1031,10 @@ exports.transfer = async (req, res) => {
     if (io) {
       const roomDestino = prefixDestino.toLowerCase();
 
-      // Payload igual al de creación
       const socketPayload = {
         idTicketRegistration: ticket.idTicketRegistration,
         turnNumber: ticket.turnNumber,
-        correlativo: ticket.correlativo,
+        correlativo: ticket.correlativo, // ✅ mantiene el mismo correlativo
         prefix: prefixDestino,
         usuario: ticket.Client?.name || "Sin cliente",
         modulo: cashierDestino.Service.name,
@@ -1070,7 +1061,7 @@ exports.transfer = async (req, res) => {
 
       console.log("[transfer] 📡 Ticket reenviado a la cola del nuevo servicio y TV.");
 
-      // 🔹 Reforzar redistribución (para que se actualice la cola sin recargar)
+      // 🔁 Refrescar la cola del nuevo servicio sin recargar
       if (socketModule.redistributeTickets) {
         await socketModule.redistributeTickets(prefixDestino);
         console.log(`[transfer] 🔁 Redistribución forzada para ${prefixDestino}`);
@@ -1079,7 +1070,7 @@ exports.transfer = async (req, res) => {
 
     return res.json({
       ok: true,
-      message: "Ticket transferido al final de la cola del nuevo servicio.",
+      message: "Ticket transferido manteniendo número original (al final de la cola).",
       ticket,
     });
   } catch (e) {
