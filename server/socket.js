@@ -1136,18 +1136,19 @@ module.exports = {
     }
   },
 
- notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
+notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
   try {
     if (!io) throw new Error('io no inicializado');
     const { Cashier, Service } = require('../models');
 
     const cashierTo = await Cashier.findByPk(toCashierId, {
       attributes: ['idCashier', 'idService'],
-      include: [{ model: Service, attributes: ['idService', 'prefix'] }],
+      include: [{ model: Service, attributes: ['idService', 'prefix', 'name'] }],
     });
 
     let enrichedTicket = { ...ticket };
     let destPrefix = ticket.prefix || '';
+
     if (cashierTo) {
       const srvId = Number(cashierTo.idService);
       const srvPrefix = cashierTo.Service?.prefix ? String(cashierTo.Service.prefix) : String(destPrefix || '');
@@ -1157,30 +1158,52 @@ module.exports = {
     }
 
     const room = String(destPrefix).toLowerCase();
+
     const payload = {
       ticket: { ...enrichedTicket, modulo: String(toCashierId) },
       fromCashierId,
       toCashierId,
-      queued: true,              // 🔹 deja claro que va a la cola
-      isPriorityTransfer: false, // 🔹 explícito: no priorizar
+      queued: true,
       timestamp: Date.now(),
     };
 
-    // 🔹 Solo notifica al room del servicio destino y a las TVs
+    // 🔹 Emitir evento estándar (para historial)
     io.to(room).emit('ticket-transferred', payload);
     io.to('tv').emit('ticket-transferred', payload);
 
-    console.log(`[socket] Ticket ${enrichedTicket.correlativo} transferido a ${destPrefix} → en cola (no prioritario)`);
+    // 🔹 Reinyectar el ticket como "nuevo" para la cola y TV
+    const queuePayload = {
+      idTicketRegistration: enrichedTicket.idTicketRegistration,
+      turnNumber: enrichedTicket.turnNumber,
+      correlativo: enrichedTicket.correlativo,
+      prefix: enrichedTicket.prefix,
+      usuario: enrichedTicket.Client?.name || 'Sin cliente',
+      modulo: cashierTo?.Service?.name || enrichedTicket.Service?.name || 'Sin módulo',
+      createdAt: enrichedTicket.createdAt,
+      idTicketStatus: enrichedTicket.idTicketStatus,
+      idCashier: null,
+      idService: enrichedTicket.idService,
+      status: enrichedTicket.status,
+    };
 
-    // 🔹 Pero sí libera la ventanilla de origen para continuar
+    io.to(room).emit('new-ticket', queuePayload);
+    io.to('tv').emit('new-ticket', queuePayload);
+
+    console.log(`[socket] 📡 Ticket ${enrichedTicket.correlativo} transferido → emitido a cola ${destPrefix}`);
+
+    // 🔹 Libera al cajero de origen para continuar con su siguiente
     if (fromCashierId) {
       const originPrefix = await getPrefixByCashierId(fromCashierId);
       if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
     }
+
+    // 🔹 Redistribuye para que los cajeros del destino se actualicen
+    await module.exports.redistributeTickets(destPrefix);
   } catch (e) {
     console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
   }
 },
+
 
 
   redistributeTickets: async (prefix) => {

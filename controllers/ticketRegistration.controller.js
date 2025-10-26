@@ -933,14 +933,19 @@ exports.transfer = async (req, res) => {
 
     if (!idTicketRegistration || !toCashierId) {
       await transaction.rollback();
-      return res
-        .status(400)
-        .json({ ok: false, message: "Parámetros incompletos: idTicketRegistration y toCashierId son requeridos." });
+      return res.status(400).json({
+        ok: false,
+        message:
+          "Parámetros incompletos: idTicketRegistration y toCashierId son requeridos.",
+      });
     }
 
     // 🔹 Buscar ticket original
     const ticket = await TicketRegistration.findByPk(idTicketRegistration, {
-      include: [{ model: Service, attributes: ["idService", "prefix"] }],
+      include: [
+        { model: Service, attributes: ["idService", "prefix", "name"] },
+        { model: Client, attributes: ["idClient", "name", "dpi"] },
+      ],
       transaction,
     });
 
@@ -950,7 +955,7 @@ exports.transfer = async (req, res) => {
 
     // 🔹 Buscar cajero destino y su servicio asociado
     const cashierDestino = await Cashier.findByPk(toCashierId, {
-      include: [{ model: Service, attributes: ["idService", "prefix"] }],
+      include: [{ model: Service, attributes: ["idService", "prefix", "name"] }],
       transaction,
     });
     if (!cashierDestino) throw new Error("Cajero destino no encontrado.");
@@ -996,12 +1001,11 @@ exports.transfer = async (req, res) => {
       { transaction }
     );
 
-    // 🔹 Registrar log de transferencia (✅ corregido)
+    // 🔹 Registrar log de transferencia
     if (TicketTransferLog) {
       await TicketTransferLog.create(
         {
           idTicketRegistration, // ✅ obligatorio
-          idTicket: idTicketRegistration, // (si tu modelo también lo tiene)
           fromService: ticket.idService,
           toService: serviceDestinoId,
           fromCashierId,
@@ -1017,15 +1021,43 @@ exports.transfer = async (req, res) => {
     await transaction.commit();
     console.log("[transfer] ✅ Transferencia completada correctamente.");
 
-    // 🔹 Notificar por sockets
+    // 🔹 Notificar por sockets (reenviar el ticket a la nueva cola)
     const socketModule = require("../server/socket");
-    if (socketModule.notifyTicketTransferred) {
-      await socketModule.notifyTicketTransferred(
-        ticket,
-        fromCashierId,
-        toCashierId,
-        true
-      );
+    const io = socketModule.getIo?.();
+
+    if (io) {
+      const roomDestino = prefixDestino.toLowerCase();
+
+      // Payload igual al de creación
+      const socketPayload = {
+        idTicketRegistration: ticket.idTicketRegistration,
+        turnNumber: ticket.turnNumber,
+        correlativo: ticket.correlativo,
+        prefix: prefixDestino,
+        usuario: ticket.Client?.name || "Sin cliente",
+        modulo: cashierDestino.Service.name,
+        createdAt: ticket.createdAt,
+        idTicketStatus: STATUS.PENDIENTE,
+        idCashier: null,
+        idService: serviceDestinoId,
+        status: ticket.status,
+        forcedToCashierId: null,
+      };
+
+      // Enviar a los clientes del nuevo servicio y TV
+      io.to(roomDestino).emit("new-ticket", socketPayload);
+      io.to("tv").emit("new-ticket", socketPayload);
+
+      // Notificar opcionalmente al cajero origen
+      if (fromCashierId) {
+        io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
+          ticketId: ticket.idTicketRegistration,
+          from: ticket.idService,
+          to: serviceDestinoId,
+        });
+      }
+
+      console.log("[transfer] 📡 Ticket reenviado a la cola del nuevo servicio y TV.");
     }
 
     return res.json({
