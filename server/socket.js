@@ -1225,15 +1225,14 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
 
       const { TicketRegistration } = require('../models');
 
-      const tickets = await TicketRegistration.findAll({
-        where: {
-          idTicketStatus: 1,
-          idService: serviceId,
-          status: true,
-          forcedToCashierId: null,
-        },
-        order: [['turnNumber', 'ASC']]
-      });
+const tickets = await TicketRegistration.findAll({
+  where: {
+    idTicketStatus: 1,
+    idService: serviceId,
+    status: true
+  },
+  order: [['turnNumber', 'ASC'], ['createdAt', 'ASC']],
+});
 
       if (tickets.length === 0) {
         console.log(`[socket] No hay tickets pendientes en servicio ${prefix}`);

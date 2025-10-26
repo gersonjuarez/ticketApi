@@ -907,7 +907,6 @@ exports.findAllLive = async (req, res) => {
       });
   }
 };
-
 // ============================================
 // TRANSFERENCIA DE TICKET ENTRE SERVICIOS/CAJEROS
 // ============================================
@@ -953,6 +952,9 @@ exports.transfer = async (req, res) => {
     if (ticket.idTicketStatus !== STATUS.EN_ATENCION)
       throw new Error("Solo se pueden transferir tickets en atención.");
 
+    // 🔹 Guardar el servicio original ANTES de cambiarlo
+    const fromServiceId = ticket.idService;
+
     // 🔹 Buscar cajero destino y su servicio asociado
     const cashierDestino = await Cashier.findByPk(toCashierId, {
       include: [{ model: Service, attributes: ["idService", "prefix", "name"] }],
@@ -964,7 +966,7 @@ exports.transfer = async (req, res) => {
     const serviceDestinoId = cashierDestino.Service.idService;
 
     console.log("[transfer] 🎯 Transferencia:", {
-      fromService: ticket.idService,
+      fromService: fromServiceId,
       toService: serviceDestinoId,
       prefixDestino,
     });
@@ -983,7 +985,7 @@ exports.transfer = async (req, res) => {
     ticket.idService = serviceDestinoId;
     ticket.idCashier = null;
     ticket.idTicketStatus = STATUS.PENDIENTE;
-    ticket.forcedToCashierId = null;
+    ticket.forcedToCashierId = null; // puedes cambiarlo si quieres forzar al nuevo cajero
     ticket.updatedAt = new Date();
 
     await ticket.save({ transaction });
@@ -1006,7 +1008,7 @@ exports.transfer = async (req, res) => {
       await TicketTransferLog.create(
         {
           idTicketRegistration, // ✅ obligatorio
-          fromService: ticket.idService,
+          fromService: fromServiceId, // ✅ ahora correcto
           toService: serviceDestinoId,
           fromCashierId,
           toCashierId,
@@ -1016,6 +1018,7 @@ exports.transfer = async (req, res) => {
         },
         { transaction }
       );
+      console.log("[transfer] 🧾 Log de transferencia registrado correctamente.");
     }
 
     await transaction.commit();
@@ -1052,12 +1055,18 @@ exports.transfer = async (req, res) => {
       if (fromCashierId) {
         io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
           ticketId: ticket.idTicketRegistration,
-          from: ticket.idService,
+          from: fromServiceId,
           to: serviceDestinoId,
         });
       }
 
       console.log("[transfer] 📡 Ticket reenviado a la cola del nuevo servicio y TV.");
+
+      // 🔹 Reforzar redistribución del servicio destino (para que aparezca sin recargar)
+      if (socketModule.redistributeTickets) {
+        await socketModule.redistributeTickets(prefixDestino);
+        console.log(`[transfer] 🔁 Redistribución forzada para ${prefixDestino}`);
+      }
     }
 
     return res.json({
