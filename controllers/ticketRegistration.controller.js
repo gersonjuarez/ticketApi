@@ -21,7 +21,7 @@ const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
 // Prioriza reservados para el cajero y asegura FIFO real por turnNumber
 const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
-  return [
+  const order = [
     [
       sequelize.literal(`
         CASE
@@ -33,25 +33,27 @@ const buildOrderForCashier = (cashierId = 0) => {
       "ASC",
     ],
     ["idTicketStatus", "ASC"],       // pendientes primero
-    
-    // ✅ NUEVO ORDEN: Primero por si es trasladado, luego por creación
-   [
-  sequelize.literal(`
-    CASE 
-      WHEN transferredAt IS NULL THEN 0
-      ELSE 1
-    END
-  `),
-  "ASC"
-],
+    [
+      sequelize.literal(`
+        CASE 
+          WHEN "transferred_at" IS NULL THEN 0  -- No trasladados primero
+          ELSE 1                               -- Trasladados después
+        END
+      `),
+      "ASC"
+    ],
     ["createdAt", "ASC"],           // FIFO real por creación
     ["turnNumber", "ASC"],          // Solo como desempate
-    
     ["updatedAt", "ASC"],
-    ["transferredAt", "ASC"],       // Los trasladados van al final
+   
   ];
+  
+  // 🔍 LOG DEL ORDENAMIENTO
+  console.log('⚙️ [buildOrderForCashier] Orden para cashier:', cashierId);
+  console.log('⚙️ [buildOrderForCashier] Ordenamiento:', JSON.stringify(order, null, 2));
+  
+  return order;
 };
-
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
   if (!svcId) return baseWhere;
@@ -172,6 +174,14 @@ const toCreatedTicketPayload = ({
 exports.findAll = async (req, res) => {
   try {
     const { prefix, idCashier: idCashierRaw, respectForced } = req.query;
+    
+    // 🔍 AGREGAR LOGS DE DEPURACIÓN
+    console.log('🔍 [findAll] Parámetros query:', { 
+      prefix, 
+      idCashier: idCashierRaw, 
+      respectForced 
+    });
+    
     const idCashierQ = Number.isFinite(Number(idCashierRaw))
       ? Number(idCashierRaw)
       : 0;
@@ -180,10 +190,16 @@ exports.findAll = async (req, res) => {
     const respect = respectForced !== "false";
 
     let where = { idTicketStatus: STATUS.PENDIENTE };
+    console.log('📍 [findAll] Where inicial:', where);
 
     let svc = null;
     if (prefix) {
       svc = await getServiceByPrefix(prefix);
+      console.log('🎯 [findAll] Servicio encontrado:', { 
+        idService: svc?.idService, 
+        prefix: svc?.prefix,
+        name: svc?.name 
+      });
       if (!svc) return res.json([]);
       // ⬇️ clave: OR por servicio/forced/idCashier
       where = applyServiceOrForced(where, svc.idService, idCashierQ, respect);
@@ -191,15 +207,28 @@ exports.findAll = async (req, res) => {
 
     // ⬇️ clave: oculta los reservados a otros
     where = addForcedVisibilityClause(where, idCashierQ, respect);
+    console.log('📍 [findAll] Where final:', JSON.stringify(where, null, 2));
+
+    // 🔍 VER EL ORDENAMIENTO QUE SE APLICA
+    const order = buildOrderForCashier(idCashierQ);
+    console.log('📊 [findAll] Orden aplicado:', JSON.stringify(order, null, 2));
 
     const tickets = await TicketRegistration.findAll({
       where,
       include: [{ model: Service }, { model: Client }],
-      order: buildOrderForCashier(idCashierQ),
+      order,
+      logging: (sql) => console.log('🐬 [findAll] SQL ejecutado:', sql) // ← Muestra el SQL real
+    });
+
+    // 🔍 VER LOS RESULTADOS ORDENADOS
+    console.log('🎫 [findAll] Tickets encontrados ordenados:');
+    tickets.forEach((t, index) => {
+      console.log(`   ${index + 1}. ${t.correlativo}: transferredAt=${t.transferredAt}, createdAt=${t.createdAt}, turnNumber=${t.turnNumber}`);
     });
 
     res.json(tickets.map((t) => toTicketPayload(t, t.Client, t.Service)));
   } catch (error) {
+    console.error('❌ [findAll] Error:', error);
     res.status(500).json({ error: error.message });
   }
 };
@@ -517,7 +546,7 @@ exports.getTicketsForCashier = async (req, res) => {
     const queueTickets = await TicketRegistration.findAll({
       where: queueWhere,
       include: [{ model: Client }, { model: Service }],
-      order: [
+ order: [
         [
           sequelize.literal(`
             CASE
@@ -528,9 +557,13 @@ exports.getTicketsForCashier = async (req, res) => {
           `),
           "ASC",
         ],
-        ["turnNumber", "ASC"], // ⬅️ FIFO real
+     
+        [
+          sequelize.literal('CASE WHEN transferredAt IS NULL THEN 0 ELSE 1 END'),
+          "ASC"
+        ],
         ["createdAt", "ASC"],
-        ["updatedAt", "ASC"],
+        ["turnNumber", "ASC"],
       ],
     });
 
