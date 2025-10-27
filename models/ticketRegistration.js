@@ -86,7 +86,7 @@ TicketRegistration.init(
 transferredAt: {
   type: DataTypes.DATE,
   allowNull: true,
-  field: "transferred_at",  
+  field: "transferredAt",  
 },
   },
   {

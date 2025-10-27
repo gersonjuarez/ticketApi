@@ -1224,7 +1224,7 @@ const tickets = await TicketRegistration.findAll({
     status: true,
   },
 order: [
-  [sequelize.literal('CASE WHEN transferred_at IS NULL THEN 0 ELSE 1 END'), 'ASC'],
+  [sequelize.literal('CASE WHEN transferredAt IS NULL THEN 0 ELSE 1 END'), 'ASC'],
   ['createdAt', 'ASC'],
   ['turnNumber', 'ASC']
 ]
