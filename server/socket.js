@@ -1223,12 +1223,11 @@ const tickets = await TicketRegistration.findAll({
     idService: serviceId,
     status: true,
   },
-  order: [
-    // ✅ CAMBIAR Sequelize.literal por sequelize.literal
-    [sequelize.literal('CASE WHEN "transferredAt" IS NULL THEN 0 ELSE 1 END'), 'ASC'],
-    ['createdAt', 'ASC'],
-    ['turnNumber', 'ASC']
-  ]
+order: [
+  [sequelize.literal('CASE WHEN transferred_at IS NULL THEN 0 ELSE 1 END'), 'ASC'],
+  ['createdAt', 'ASC'],
+  ['turnNumber', 'ASC']
+]
 });
 
       if (tickets.length === 0) {

@@ -83,12 +83,11 @@ TicketRegistration.init(
     },
 
     // ✅ AGREGA ESTE CAMPO FALTANTE
-    transferredAt: {
-      type: DataTypes.DATE,
-      allowNull: true,
-      field: "transferred_at",
-      comment: "Fecha/hora cuando el ticket fue trasladado entre servicios",
-    },
+transferredAt: {
+  type: DataTypes.DATE,
+  allowNull: true,
+  field: "transferred_at",  
+},
   },
   {
     sequelize,
