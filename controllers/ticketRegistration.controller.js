@@ -36,7 +36,7 @@ const buildOrderForCashier = (cashierId = 0) => {
     [
       sequelize.literal(`
         CASE 
-          WHEN "transferred_at" IS NULL THEN 0  -- No trasladados primero
+          WHEN "transferredAt" IS NULL THEN 0  -- No trasladados primero
           ELSE 1                               -- Trasladados después
         END
       `),
