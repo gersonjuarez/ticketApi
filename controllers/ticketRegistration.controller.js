@@ -33,13 +33,24 @@ const buildOrderForCashier = (cashierId = 0) => {
       "ASC",
     ],
     ["idTicketStatus", "ASC"],       // pendientes primero
-    ["turnNumber", "ASC"],           // FIFO clásico dentro del servicio
-    ["createdAt", "ASC"],
+    
+    // ✅ NUEVO ORDEN: Primero por si es trasladado, luego por creación
+    [
+      sequelize.literal(`
+        CASE 
+          WHEN "transferredAt" IS NULL THEN 0  -- No trasladados primero
+          ELSE 1                               -- Trasladados después
+        END
+      `),
+      "ASC"
+    ],
+    ["createdAt", "ASC"],           // FIFO real por creación
+    ["turnNumber", "ASC"],          // Solo como desempate
+    
     ["updatedAt", "ASC"],
-    ["transferredAt", "ASC"],        // ✅ los trasladados van al final de la cola
+    ["transferredAt", "ASC"],       // Los trasladados van al final
   ];
 };
-
 
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
