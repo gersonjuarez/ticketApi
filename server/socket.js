@@ -1,7 +1,7 @@
 // server/socket.js
 const { Server } = require('socket.io');
 const { Op } = require('sequelize');
-
+const { sequelize } = require('../models');
 let io;
 // === Unicidad de sesión/ventanilla ===
 const userActiveSocket = new Map();    // Map<idUser, socketId>
@@ -1224,14 +1224,9 @@ const tickets = await TicketRegistration.findAll({
     status: true,
   },
   order: [
-    // ✅ PRIORIDAD: No trasladados primero, luego trasladados
-    [
-      sequelize.literal('CASE WHEN "transferredAt" IS NULL THEN 0 ELSE 1 END'), 
-      'ASC'
-    ],
-    // ✅ ORDEN CRONOLÓGICO REAL
+    // ✅ CAMBIAR Sequelize.literal por sequelize.literal
+    [sequelize.literal('CASE WHEN "transferredAt" IS NULL THEN 0 ELSE 1 END'), 'ASC'],
     ['createdAt', 'ASC'],
-    // ✅ Desempate por turnNumber (solo para tickets creados al mismo tiempo)
     ['turnNumber', 'ASC']
   ]
 });
