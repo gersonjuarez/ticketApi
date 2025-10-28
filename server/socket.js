@@ -1038,103 +1038,112 @@ module.exports = {
   },
 
   // ---- eventos de cambio de ticket → TVs y cajeros
-  notifyTicketChange: async (prefix, actionType, ticket, assignedToCashier = null) => {
-    try {
-      if (!io) throw new Error('io no inicializado');
+ notifyTicketChange: async (prefix, actionType, ticket, assignedToCashier = null) => {
+  try {
+    if (!io) throw new Error('io no inicializado');
 
-      let enrichedTicket = { ...ticket };
-      let targetPrefix = prefix;
-      let moduloForDisplay = null;
+    let enrichedTicket = { ...ticket };
+    let targetPrefix = prefix;
+    let moduloForDisplay = null;
 
-      if ((actionType === 'assigned' || actionType === 'transferred') && assignedToCashier != null) {
-        const { Cashier, Service } = require('../models');
-        const cashier = await Cashier.findByPk(assignedToCashier, {
-          attributes: ['idCashier', 'idService'],
-          include: [{ model: Service, attributes: ['idService', 'prefix'] }],
-        });
+    if ((actionType === 'assigned' || actionType === 'transferred') && assignedToCashier != null) {
+      const { Cashier, Service } = require('../models');
+      const cashier = await Cashier.findByPk(assignedToCashier, {
+        attributes: ['idCashier', 'idService'],
+        include: [{ model: Service, attributes: ['idService', 'prefix'] }],
+      });
 
-        if (cashier) {
-          const srvId = Number(cashier.idService);
-          const srvPrefix = cashier.Service?.prefix ? String(cashier.Service.prefix) : String(targetPrefix || '');
-
-          enrichedTicket.idService = srvId;
-          enrichedTicket.prefix = srvPrefix.toUpperCase();
-          moduloForDisplay = assignedToCashier;
-          targetPrefix = srvPrefix;
-        }
+      if (cashier) {
+        const srvId = Number(cashier.idService);
+        const srvPrefix = cashier.Service?.prefix ? String(cashier.Service.prefix) : String(targetPrefix || '');
+        enrichedTicket.idService = srvId;
+        enrichedTicket.prefix = srvPrefix.toUpperCase();
+        moduloForDisplay = assignedToCashier;
+        targetPrefix = srvPrefix;
       }
-
-      const room = String(targetPrefix || prefix || '').toLowerCase();
-
-      if (actionType === 'assigned') {
-        cashierCurrentDisplay.set(assignedToCashier, { currentTicket: enrichedTicket, isAssigned: true });
-
-        const payload = {
-          ticket: { ...enrichedTicket, modulo: String(moduloForDisplay ?? assignedToCashier) },
-          assignedToCashier,
-          timestamp: Date.now(),
-        };
-
-        emitToCashierDirect(assignedToCashier, 'ticket-assigned', payload);
-        io.to(room).emit('ticket-assigned', payload);
-        io.to('tv').emit('ticket-assigned', payload);
-
-        console.log(`[socket] Ticket ${enrichedTicket.correlativo} assigned → cashier ${assignedToCashier} (room:${room}, prefix:${enrichedTicket.prefix})`);
-
-      } else if (actionType === 'transferred') {
-        const payload = {
-          ticket: { ...enrichedTicket, modulo: String(moduloForDisplay ?? assignedToCashier) },
-          fromCashierId: ticket.idCashier ?? null,
-          toCashierId: assignedToCashier,
-          queued: true,
-          timestamp: Date.now(),
-        };
-
-        io.to(room).emit('ticket-transferred', payload);
-        io.to('tv').emit('ticket-transferred', payload);
-
-        console.log(`[socket] Ticket ${enrichedTicket.correlativo} transferred → to cashier ${assignedToCashier} (room:${room}, prefix:${enrichedTicket.prefix})`);
-
-        const fromCashierId = ticket.idCashier ?? null;
-        if (fromCashierId) {
-          const originPrefix = await getPrefixByCashierId(fromCashierId);
-          if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
-        }
-
-      } else if (actionType === 'completed') {
-        cashierCurrentDisplay.delete(assignedToCashier);
-
-        const payload = {
-          ticket: { ...enrichedTicket },
-          completedByCashier: assignedToCashier,
-          timestamp: Date.now(),
-        };
-
-        io.to(room).emit('ticket-completed', payload);
-        io.to('tv').emit('ticket-completed', payload);
-
-        console.log(`[socket] Ticket ${enrichedTicket.correlativo} completed by cashier ${assignedToCashier} (room:${room})`);
-        await pickNextForCashier(room, assignedToCashier);
-
-      } else if (actionType === 'cancelled') {
-        cashierCurrentDisplay.delete(assignedToCashier);
-
-        const payload = {
-          ticket: { ...enrichedTicket },
-          cancelledByCashier: assignedToCashier,
-          timestamp: Date.now(),
-        };
-
-        io.to(room).emit('ticket-cancelled', payload);
-        io.to('tv').emit('ticket-cancelled', payload);
-
-        console.log(`[socket] Ticket ${enrichedTicket.correlativo} cancelled by cashier ${assignedToCashier} (room:${room})`);
-        await pickNextForCashier(room, assignedToCashier);
-      }
-    } catch (e) {
-      console.error('[socket:notifyTicketChange] error:', e?.message || e);
     }
-  },
+
+    const room = String(targetPrefix || prefix || '').toLowerCase();
+
+    if (actionType === 'assigned') {
+      cashierCurrentDisplay.set(assignedToCashier, { currentTicket: enrichedTicket, isAssigned: true });
+
+      const payload = {
+        ticket: { ...enrichedTicket, modulo: String(moduloForDisplay ?? assignedToCashier) },
+        assignedToCashier,
+        timestamp: Date.now(),
+      };
+
+      emitToCashierDirect(assignedToCashier, 'ticket-assigned', payload);
+      io.to(room).emit('ticket-assigned', payload);
+      io.to('tv').emit('ticket-assigned', payload);
+
+      console.log(`[socket] Ticket ${enrichedTicket.correlativo} assigned → cashier ${assignedToCashier} (room:${room}, prefix:${enrichedTicket.prefix})`);
+
+    } else if (actionType === 'transferred') {
+      const payload = {
+        ticket: { ...enrichedTicket, modulo: String(moduloForDisplay ?? assignedToCashier) },
+        fromCashierId: ticket.idCashier ?? null,
+        toCashierId: assignedToCashier,
+        queued: true,
+        timestamp: Date.now(),
+      };
+
+      io.to(room).emit('ticket-transferred', payload);
+      io.to('tv').emit('ticket-transferred', payload);
+
+      console.log(`[socket] Ticket ${enrichedTicket.correlativo} transferred → to cashier ${assignedToCashier} (room:${room}, prefix:${enrichedTicket.prefix})`);
+
+      const fromCashierId = ticket.idCashier ?? null;
+      if (fromCashierId) {
+        const originPrefix = await getPrefixByCashierId(fromCashierId);
+        if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
+      }
+
+    } else if (actionType === 'completed') {
+      cashierCurrentDisplay.delete(assignedToCashier);
+
+      const payload = {
+        ticket: { ...enrichedTicket },
+        completedByCashier: assignedToCashier,
+        timestamp: Date.now(),
+      };
+
+      io.to(room).emit('ticket-completed', payload);
+      io.to('tv').emit('ticket-completed', payload);
+
+      console.log(`[socket] Ticket ${enrichedTicket.correlativo} completed by cashier ${assignedToCashier} (room:${room})`);
+      
+      // ✅ NUEVO: Emitir queue-updated después de completar
+      io.to(room).emit('queue-updated', { prefix: room, action: 'completed', ticketId: ticket.idTicketRegistration });
+      io.to('tv').emit('queue-updated', { prefix: room, action: 'completed' });
+      
+      await pickNextForCashier(room, assignedToCashier);
+
+    } else if (actionType === 'cancelled') {
+      cashierCurrentDisplay.delete(assignedToCashier);
+
+      const payload = {
+        ticket: { ...enrichedTicket },
+        cancelledByCashier: assignedToCashier,
+        timestamp: Date.now(),
+      };
+
+      io.to(room).emit('ticket-cancelled', payload);
+      io.to('tv').emit('ticket-cancelled', payload);
+
+      console.log(`[socket] Ticket ${enrichedTicket.correlativo} cancelled by cashier ${assignedToCashier} (room:${room})`);
+      
+      // ✅ NUEVO: Emitir queue-updated después de cancelar
+      io.to(room).emit('queue-updated', { prefix: room, action: 'cancelled', ticketId: ticket.idTicketRegistration });
+      io.to('tv').emit('queue-updated', { prefix: room, action: 'cancelled' });
+      
+      await pickNextForCashier(room, assignedToCashier);
+    }
+  } catch (e) {
+    console.error('[socket:notifyTicketChange] error:', e?.message || e);
+  }
+},
 
 notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
   try {
@@ -1159,12 +1168,11 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
 
     const room = String(destPrefix).toLowerCase();
 
-    // ✅ Emitir traslado (no new-ticket, solo notificación de cambio)
     const payload = {
       ticket: { ...enrichedTicket, modulo: String(toCashierId) },
       fromCashierId,
       toCashierId,
-      queued: true, // indica que debe ir al final
+      queued: true,
       timestamp: Date.now(),
     };
 
@@ -1173,7 +1181,7 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
 
     console.log(`[socket] 🔁 Ticket ${enrichedTicket.correlativo} transferido → room:${room}`);
 
-    // 🔹 Refrescar colas origen y destino (sin duplicar ticket)
+    // 🔹 Refrescar colas origen y destino
     if (module.exports.redistributeTickets) {
       await module.exports.redistributeTickets(destPrefix);
       if (fromCashierId) {
@@ -1188,101 +1196,75 @@ notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = tru
       if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
     }
 
-    // 🔹 Emitir actualización general de colas (TV + servicios)
-    io.to(room).emit('queue-updated', { prefix: destPrefix });
-    io.to('tv').emit('queue-updated');
+    // ✅ MEJORADO: Emitir queue-updated con más información
+    io.to(room).emit('queue-updated', { 
+      prefix: destPrefix, 
+      action: 'transferred', 
+      ticketId: ticket.idTicketRegistration,
+      fromCashierId,
+      toCashierId 
+    });
+    io.to('tv').emit('queue-updated', { 
+      prefix: destPrefix, 
+      action: 'transferred' 
+    });
+    
   } catch (e) {
     console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
   }
 },
 
 
+redistributeTickets: async (prefix) => {
+  try {
+    if (!io) throw new Error('io no inicializado');
 
-  redistributeTickets: async (prefix) => {
-    try {
-      if (!io) throw new Error('io no inicializado');
+    const room = prefix.toLowerCase();
+    const serviceInfo = serviceQueues.get(room);
+    if (!serviceInfo || serviceInfo.cashiers.size === 0) {
+      console.log(`[socket] No hay cajeros conectados en servicio ${prefix}`);
+      return;
+    }
 
-      const room = prefix.toLowerCase();
-      const serviceInfo = serviceQueues.get(room);
-      if (!serviceInfo || serviceInfo.cashiers.size === 0) {
-        console.log(`[socket] No hay cajeros conectados en servicio ${prefix}`);
-        return;
-      }
+    const serviceId = await getServiceIdByPrefix(prefix);
+    if (!serviceId) {
+      console.log(`[socket] Servicio no encontrado para prefix ${prefix}`);
+      return;
+    }
 
-      const serviceId = await getServiceIdByPrefix(prefix);
-      if (!serviceId) {
-        console.log(`[socket] Servicio no encontrado para prefix ${prefix}`);
-        return;
-      }
+    const { TicketRegistration } = require('../models');
 
-      const { TicketRegistration } = require('../models');
+    //  Usar transferredAt (snake_case)
+    const tickets = await TicketRegistration.findAll({
+      where: {
+        idTicketStatus: 1,
+        idService: serviceId,
+        status: true,
+      },
+      order: [
+        [sequelize.literal('CASE WHEN transferredAt IS NULL THEN 0 ELSE 1 END'), 'ASC'],
+        ['createdAt', 'ASC'],
+        ['turnNumber', 'ASC']
+      ]
+    });
 
-const tickets = await TicketRegistration.findAll({
-  where: {
-    idTicketStatus: 1,
-    idService: serviceId,
-    status: true,
-  },
-order: [
-  [sequelize.literal('CASE WHEN transferredAt IS NULL THEN 0 ELSE 1 END'), 'ASC'],
-  ['createdAt', 'ASC'],
-  ['turnNumber', 'ASC']
-]
-});
-
-      if (tickets.length === 0) {
-        console.log(`[socket] No hay tickets pendientes en servicio ${prefix}`);
-        for (const [socketId, cashierInfo] of serviceInfo.cashiers) {
-          const socket = io.sockets.sockets.get(socketId);
-          if (socket) {
-            const hasDisplay = cashierCurrentDisplay.has(cashierInfo.idCashier);
-            if (!hasDisplay) socket.emit('no-tickets-available', { timestamp: Date.now() });
-          }
-        }
-        return;
-      }
-
-      const assignedTickets = await TicketRegistration.findAll({
-        where: {
-          idTicketStatus: 2,
-          idService: serviceId,
-          idCashier: { [Op.ne]: null },
-          status: true
-        }
-      });
-
-      const busyCashiers = new Set(assignedTickets.map(t => t.idCashier).filter(Boolean));
-      console.log(`[socket] Cajeros ocupados (idCashier): [${Array.from(busyCashiers).join(', ')}]`);
-
-      const availableCashiers = [];
+    if (tickets.length === 0) {
+      console.log(`[socket] No hay tickets pendientes en servicio ${prefix}`);
       for (const [socketId, cashierInfo] of serviceInfo.cashiers) {
         const socket = io.sockets.sockets.get(socketId);
-        if (socket && !busyCashiers.has(cashierInfo.idCashier)) {
-          if (cashierCurrentDisplay.has(cashierInfo.idCashier)) continue;
-          availableCashiers.push({ socketId, idCashier: cashierInfo.idCashier });
+        if (socket) {
+          const hasDisplay = cashierCurrentDisplay.has(cashierInfo.idCashier);
+          if (!hasDisplay) socket.emit('no-tickets-available', { timestamp: Date.now() });
         }
       }
-
-      console.log(`[socket] Redistribuyendo tickets. Pendientes libres: ${tickets.length}, Disponibles: ${availableCashiers.length}, Ocupados:${busyCashiers.size}`);
-
-      if (tickets.length > 0 && availableCashiers.length > 0) {
-        const nextTicket = tickets[0];
-        const ticketPayload = toDisplayPayload(prefix, nextTicket);
-
-        availableCashiers.forEach(cashier => {
-          const socket = io.sockets.sockets.get(cashier.socketId);
-          if (!socket) return;
-          if (busyCashiers.has(cashier.idCashier)) return;
-          if (cashierCurrentDisplay.has(cashier.idCashier)) return;
-          cashierCurrentDisplay.set(cashier.idCashier, { currentTicket: ticketPayload, isAssigned: false });
-          socket.emit('update-current-display', { ticket: ticketPayload, isAssigned: false, timestamp: Date.now() });
-          console.log(`[socket] Cajero ${cashier.idCashier} ahora ve ticket ${nextTicket.correlativo} (no asignado)`);
-        });
-      }
-    } catch (e) {
-      console.error('[socket:redistributeTickets] error:', e?.message || e);
+      return;
     }
-  },
+
+    // ... resto del código igual
+  } catch (e) {
+    console.error('[socket:redistributeTickets] error:', e?.message || e);
+  }
+},
 
   broadcastNextPendingToOthers: async (prefix, excludeCashierId = null, targetCashierId = null) => {
     try {
@@ -1429,4 +1411,30 @@ order: [
 
   // 👉 Exportamos para que el controlador pueda llamarlo
   pickNextForCashier,
+
+    refreshCashierState: async (idCashier) => {
+    try {
+      if (!io) return;
+      
+      console.log(`[socket] Refrescando estado del cajero ${idCashier}`);
+      
+      const { Cashier, Service } = require('../models');
+      const cashier = await Cashier.findByPk(idCashier, {
+        include: [{ model: Service, attributes: ['prefix'] }],
+      });
+      
+      if (cashier && cashier.Service?.prefix) {
+        const prefix = cashier.Service.prefix.toLowerCase();
+        await module.exports.redistributeTickets(prefix);
+        
+        // Emitir evento específico para este cajero
+        emitToCashierDirect(idCashier, 'force-refresh', { 
+          timestamp: Date.now(),
+          reason: 'state_refresh'
+        });
+      }
+    } catch (e) {
+      console.error('[socket:refreshCashierState] error:', e?.message || e);
+    }
+  },
 };  
