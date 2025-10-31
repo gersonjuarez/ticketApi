@@ -41,6 +41,12 @@ const buildOrderForCashier = (cashierId = 0) => {
       `),
       "ASC"
     ],
+      [
+      sequelize.literal(`
+        COALESCE(\`TicketRegistration\`.\`createdAt\`, '9999-12-31')
+      `),
+      "ASC",
+    ],
     ["createdAt", "ASC"],           // FIFO real por creación
     ["turnNumber", "ASC"],          // Solo como desempate
     ["updatedAt", "ASC"],
