@@ -57,12 +57,6 @@ const buildOrderForCashier = (cashierId = 0) => {
   return order;
 };
 
-  // 🔍 LOG DEL ORDENAMIENTO
-  console.log('⚙️ [buildOrderForCashier] Orden para cashier:', cashierId);
-  console.log('⚙️ [buildOrderForCashier] Ordenamiento:', JSON.stringify(order, null, 2));
-  
-  return order;
-};
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
   if (!svcId) return baseWhere;
