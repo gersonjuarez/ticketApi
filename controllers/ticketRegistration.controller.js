@@ -20,43 +20,36 @@ const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
 // Prioriza reservados para el cajero y asegura FIFO real por turnNumber
 const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
-
-  // ✅ Orden optimizado para MySQL, sin subconsultas y con prioridad funcional:
   const order = [
-    // 1️⃣ Reservados al cajero actual primero
     [
       sequelize.literal(`
         CASE
-          WHEN \`forcedToCashierId\` = ${cid} THEN 0
-          WHEN \`forcedToCashierId\` IS NULL THEN 1
+          WHEN forcedToCashierId = ${cid} THEN 0
+          WHEN forcedToCashierId IS NULL THEN 1
           ELSE 2
         END
       `),
       "ASC",
     ],
-
-    // 2️⃣ Pendientes primero
     ["idTicketStatus", "ASC"],
 
-    // 3️⃣ Tickets no trasladados primero, trasladados después
+    // 👉 Ordena transferidos al final del bloque actual (según transferredAt no nulo)
     [
       sequelize.literal(`
         CASE 
-          WHEN \`transferredAt\` IS NULL THEN 0 
-          ELSE 1 
+          WHEN transferredAt IS NULL THEN 0
+          ELSE 1
         END
       `),
       "ASC",
     ],
 
-    // 4️⃣ FIFO puro por fecha de creación (asegura que SEN-005 quede después del último traslado)
     ["createdAt", "ASC"],
-
-    // 5️⃣ Desempate por número de turno
     ["turnNumber", "ASC"],
+    ["updatedAt", "ASC"],
   ];
 
-  console.log("⚙️ buildOrderForCashier actualizado → Orden funcional en MySQL con prioridad para transferidos");
+  console.log("⚙️ buildOrderForCashier (modo simple MySQL) aplicado:", order);
   return order;
 };
 
