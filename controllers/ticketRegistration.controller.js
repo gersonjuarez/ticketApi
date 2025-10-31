@@ -31,27 +31,12 @@ const buildOrderForCashier = (cashierId = 0) => {
       `),
       "ASC",
     ],
-    ["idTicketStatus", "ASC"],
-
-    // 👉 Ordena transferidos al final del bloque actual (según transferredAt no nulo)
-    [
-      sequelize.literal(`
-        CASE 
-          WHEN transferredAt IS NULL THEN 0
-          ELSE 1
-        END
-      `),
-      "ASC",
-    ],
-
-    ["createdAt", "ASC"],
+    [sequelize.literal(`COALESCE(transferredAt, createdAt)`), "ASC"],
     ["turnNumber", "ASC"],
-    ["updatedAt", "ASC"],
   ];
-
-  console.log("⚙️ buildOrderForCashier (modo simple MySQL) aplicado:", order);
   return order;
 };
+
 
 
 
@@ -190,42 +175,34 @@ exports.findAll = async (req, res) => {
     const svcId = svc.idService;
 
     // 🔥 Inyección SQL literal (seguro porque svcId y idCashierQ son números)
-    const query = `
-      SELECT 
-        t.idTicketRegistration,
-        t.turnNumber,
-        t.correlativo,
-        t.createdAt,
-        t.transferredAt,
-        t.forcedToCashierId,
-        t.idTicketStatus,
-        t.idService,
-        t.idClient,
-        t.idCashier,
-        t.status
-      FROM ticketregistrations t
-      WHERE 
-        t.idTicketStatus IN (1, 2)
-        AND (t.idService = ${svcId} OR t.forcedToCashierId = ${idCashierQ})
-        AND t.status = true
-      ORDER BY
-        CASE
-          WHEN t.forcedToCashierId = ${idCashierQ} THEN 0
-          WHEN t.forcedToCashierId IS NULL THEN 1
-          ELSE 2
-        END,
-        CASE 
-          WHEN t.transferredAt IS NOT NULL THEN (
-            SELECT MAX(x.createdAt)
-            FROM ticketregistrations x
-            WHERE x.idService = t.idService
-              AND x.transferredAt IS NOT NULL
-          )
-          ELSE t.createdAt
-        END,
-        t.createdAt ASC,
-        t.turnNumber ASC;
-    `;
+   const query = `
+  SELECT 
+    t.idTicketRegistration,
+    t.turnNumber,
+    t.correlativo,
+    t.createdAt,
+    t.transferredAt,
+    t.forcedToCashierId,
+    t.idTicketStatus,
+    t.idService,
+    t.idClient,
+    t.idCashier,
+    t.status
+  FROM ticketregistrations t
+  WHERE 
+    t.idTicketStatus IN (1, 2)
+    AND (t.idService = ${svcId} OR t.forcedToCashierId = ${idCashierQ})
+    AND t.status = true
+  ORDER BY
+    CASE
+      WHEN t.forcedToCashierId = ${idCashierQ} THEN 0
+      WHEN t.forcedToCashierId IS NULL THEN 1
+      ELSE 2
+    END,
+    -- 🔹 Usa la fecha real de ingreso: transferido → transferredAt, normal → createdAt
+    COALESCE(t.transferredAt, t.createdAt) ASC,
+    t.turnNumber ASC;
+`;
 
     // Ejecutar la consulta literal
     const tickets = await sequelize.query(query, {
@@ -586,25 +563,23 @@ exports.getTicketsForCashier = async (req, res) => {
     const queueTickets = await TicketRegistration.findAll({
       where: queueWhere,
       include: [{ model: Client }, { model: Service }],
- order: [
-        [
-          sequelize.literal(`
-            CASE
-              WHEN "forcedToCashierId" = ${cashierId} THEN 0
-              WHEN "forcedToCashierId" IS NULL THEN 1
-              ELSE 2
-            END
-          `),
-          "ASC",
-        ],
-     
-        [
-          sequelize.literal('CASE WHEN transferredAt IS NULL THEN 0 ELSE 1 END'),
-          "ASC"
-        ],
-        ["createdAt", "ASC"],
-        ["turnNumber", "ASC"],
-      ],
+order: [
+  [
+    sequelize.literal(`
+      CASE
+        WHEN "forcedToCashierId" = ${cashierId} THEN 0
+        WHEN "forcedToCashierId" IS NULL THEN 1
+        ELSE 2
+      END
+    `),
+    "ASC",
+  ],
+  [
+    sequelize.literal(`COALESCE("transferredAt", "createdAt")`),
+    "ASC",
+  ],
+  ["turnNumber", "ASC"],
+],
     });
 
     const response = {
