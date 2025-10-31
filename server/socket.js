@@ -1145,45 +1145,95 @@ module.exports = {
   }
 },
 
-// =============================
-// ✅ Notificación de traslado
-// =============================
-function notifyTicketTransferred(ticket, fromCashierId, toCashierId, queued = false) {
-  if (!ticket) return;
-  const payload = {
-    ticket,
-    fromCashierId,
-    toCashierId,
-    queued,
-    timestamp: Date.now(),
-  };
+notifyTicketTransferred: async (ticket, fromCashierId, toCashierId, queued = true) => {
+  try {
+    if (!io) throw new Error('io no inicializado');
+    const { Cashier, Service } = require('../models');
 
-  // 🔵 Emitir al destino
-  io.to(`cashier:${toCashierId}`).emit("ticket-transferred", payload);
+    const cashierTo = await Cashier.findByPk(toCashierId, {
+      attributes: ['idCashier', 'idService'],
+      include: [{ model: Service, attributes: ['idService', 'prefix', 'name'] }],
+    });
 
-  // 🔵 Emitir al origen (para refrescar)
-  if (fromCashierId) {
-    io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", payload);
-  }
+    let enrichedTicket = { ...ticket };
+    let destPrefix = ticket.prefix || '';
 
-  // 🔵 Emitir a todos los cajeros del mismo servicio
-  const prefixRoom = (ticket.prefix || "").toLowerCase();
-  if (prefixRoom) {
-    io.to(prefixRoom).emit("queue-updated", {
-      prefix: prefixRoom,
-      action: "transferred",
+    if (cashierTo) {
+      const srvId = Number(cashierTo.idService);
+      const srvPrefix = cashierTo.Service?.prefix
+        ? String(cashierTo.Service.prefix)
+        : String(destPrefix || '');
+      enrichedTicket.idService = srvId;
+      enrichedTicket.prefix = srvPrefix.toUpperCase();
+      destPrefix = srvPrefix;
+    }
+
+    const room = String(destPrefix).toLowerCase();
+
+    const payload = {
+      ticket: { ...enrichedTicket, modulo: String(toCashierId) },
+      fromCashierId,
+      toCashierId,
+      queued,
+      timestamp: Date.now(),
+    };
+
+    // ✅ Emitir a ambos cajeros directamente
+    io.to(`cashier:${toCashierId}`).emit('ticket-transferred', payload); // destino
+    if (fromCashierId) io.to(`cashier:${fromCashierId}`).emit('ticket-transferred', payload); // origen
+
+    // ✅ Emitir también al servicio (room general) y a la TV
+    io.to(room).emit('ticket-transferred', payload);
+    io.to('tv').emit('ticket-transferred', payload);
+
+    console.log(`[socket] 🔁 Ticket ${enrichedTicket.correlativo} transferido de cajero ${fromCashierId} → ${toCashierId} (room:${room})`);
+
+    // 🔹 Refrescar colas origen y destino
+    if (module.exports.redistributeTickets) {
+      await module.exports.redistributeTickets(destPrefix);
+      if (fromCashierId) {
+        const originPrefix = await getPrefixByCashierId(fromCashierId);
+        if (originPrefix) await module.exports.redistributeTickets(originPrefix);
+      }
+    }
+
+    // 🔹 Actualizar vista del cajero origen
+    if (fromCashierId) {
+      const originPrefix = await getPrefixByCashierId(fromCashierId);
+      if (originPrefix) await pickNextForCashier(originPrefix, fromCashierId);
+    }
+
+    // ✅ Emitir queue-updated (ambos lados)
+    io.to(room).emit('queue-updated', {
+      prefix: destPrefix,
+      action: 'transferred',
       ticketId: ticket.idTicketRegistration,
       fromCashierId,
       toCashierId,
     });
-  }
+    if (fromCashierId) {
+      const originPrefix = await getPrefixByCashierId(fromCashierId);
+      if (originPrefix) {
+        io.to(originPrefix.toLowerCase()).emit('queue-updated', {
+          prefix: originPrefix,
+          action: 'transferred',
+          ticketId: ticket.idTicketRegistration,
+          fromCashierId,
+          toCashierId,
+        });
+      }
+    }
 
-  // 🔵 Emitir un force-refresh global (seguro)
-  io.emit("force-refresh", {
-    timestamp: Date.now(),
-    reason: "ticket-transferred",
-  });
-}
+    // ✅ Emitir un "force-refresh" global para máxima sincronía
+    io.emit('force-refresh', {
+      timestamp: Date.now(),
+      reason: 'ticket-transferred',
+    });
+
+  } catch (e) {
+    console.error('[socket:notifyTicketTransferred] error:', e?.message || e);
+  }
+},
 
 
 
