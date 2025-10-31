@@ -25,22 +25,22 @@ const buildOrderForCashier = (cashierId = 0) => {
     [
       sequelize.literal(`
         CASE
-          WHEN "forcedToCashierId" = ${cid} THEN 0   -- prioridad: reservados para mí
-          WHEN "forcedToCashierId" IS NULL THEN 1    -- luego los normales
-          ELSE 2                                     -- y al final los forzados a otros
+          WHEN \`forcedToCashierId\` = ${cid} THEN 0   -- prioridad: reservados para mí
+          WHEN \`forcedToCashierId\` IS NULL THEN 1    -- luego los normales
+          ELSE 2                                       -- y al final los forzados a otros
         END
       `),
       "ASC",
     ],
-    ["idTicketStatus", "ASC"],       // pendientes primero
+    ["idTicketStatus", "ASC"], // pendientes primero
     [
       sequelize.literal(`
         CASE 
-          WHEN "transferredAt" IS NULL THEN 0  -- No trasladados primero
-          ELSE 1                               -- Trasladados después
+          WHEN \`transferredAt\` IS NULL THEN 0  -- No trasladados primero
+          ELSE 1                                 -- Trasladados después
         END
       `),
-      "ASC"
+      "ASC",
     ],
     [
       sequelize.literal(`
@@ -48,12 +48,12 @@ const buildOrderForCashier = (cashierId = 0) => {
       `),
       "ASC",
     ],
-    ["createdAt", "ASC"],           // FIFO real por creación
-    ["turnNumber", "ASC"],          // Solo como desempate
+    ["createdAt", "ASC"],
+    ["turnNumber", "ASC"],
     ["updatedAt", "ASC"],
   ];
 
-  console.log("⚙️ buildOrderForCashier actualizado con prioridad correcta para transferidos");
+  console.log("⚙️ buildOrderForCashier actualizado (MySQL safe, prioridad correcta para transferidos)");
   return order;
 };
 
