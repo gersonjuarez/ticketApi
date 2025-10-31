@@ -174,64 +174,88 @@ const toCreatedTicketPayload = ({
 exports.findAll = async (req, res) => {
   try {
     const { prefix, idCashier: idCashierRaw, respectForced } = req.query;
-    
-    // 🔍 AGREGAR LOGS DE DEPURACIÓN
-    console.log('🔍 [findAll] Parámetros query:', { 
-      prefix, 
-      idCashier: idCashierRaw, 
-      respectForced 
-    });
-    
+
     const idCashierQ = Number.isFinite(Number(idCashierRaw))
       ? Number(idCashierRaw)
       : 0;
 
-    // ✅ default = true
     const respect = respectForced !== "false";
-
-    let where = { idTicketStatus: STATUS.PENDIENTE };
-    console.log('📍 [findAll] Where inicial:', where);
-
     let svc = null;
-    if (prefix) {
-      svc = await getServiceByPrefix(prefix);
-      console.log('🎯 [findAll] Servicio encontrado:', { 
-        idService: svc?.idService, 
-        prefix: svc?.prefix,
-        name: svc?.name 
-      });
-      if (!svc) return res.json([]);
-      // ⬇️ clave: OR por servicio/forced/idCashier
-      where = applyServiceOrForced(where, svc.idService, idCashierQ, respect);
-    }
 
-    // ⬇️ clave: oculta los reservados a otros
-    where = addForcedVisibilityClause(where, idCashierQ, respect);
-    console.log('📍 [findAll] Where final:', JSON.stringify(where, null, 2));
+    if (!prefix) return res.status(400).json({ error: "prefix requerido" });
 
-    // 🔍 VER EL ORDENAMIENTO QUE SE APLICA
-    const order = buildOrderForCashier(idCashierQ);
-    console.log('📊 [findAll] Orden aplicado:', JSON.stringify(order, null, 2));
+    svc = await getServiceByPrefix(prefix);
+    if (!svc) return res.json([]);
 
-    const tickets = await TicketRegistration.findAll({
-      where,
-      include: [{ model: Service }, { model: Client }],
-      order,
-      logging: (sql) => console.log('🐬 [findAll] SQL ejecutado:', sql) // ← Muestra el SQL real
+    const svcId = svc.idService;
+
+    // 🔥 Inyección SQL literal (seguro porque svcId y idCashierQ son números)
+    const query = `
+      SELECT 
+        t.idTicketRegistration,
+        t.turnNumber,
+        t.correlativo,
+        t.createdAt,
+        t.transferredAt,
+        t.forcedToCashierId,
+        t.idTicketStatus,
+        t.idService,
+        t.idClient,
+        t.idCashier,
+        t.status
+      FROM ticketregistrations t
+      WHERE 
+        t.idTicketStatus IN (1, 2)
+        AND (t.idService = ${svcId} OR t.forcedToCashierId = ${idCashierQ})
+        AND t.status = true
+      ORDER BY
+        CASE
+          WHEN t.forcedToCashierId = ${idCashierQ} THEN 0
+          WHEN t.forcedToCashierId IS NULL THEN 1
+          ELSE 2
+        END,
+        CASE 
+          WHEN t.transferredAt IS NOT NULL THEN (
+            SELECT MAX(x.createdAt)
+            FROM ticketregistrations x
+            WHERE x.idService = t.idService
+              AND x.transferredAt IS NOT NULL
+          )
+          ELSE t.createdAt
+        END,
+        t.createdAt ASC,
+        t.turnNumber ASC;
+    `;
+
+    // Ejecutar la consulta literal
+    const tickets = await sequelize.query(query, {
+      type: sequelize.QueryTypes.SELECT,
     });
 
-    // 🔍 VER LOS RESULTADOS ORDENADOS
-    console.log('🎫 [findAll] Tickets encontrados ordenados:');
-    tickets.forEach((t, index) => {
-      console.log(`   ${index + 1}. ${t.correlativo}: transferredAt=${t.transferredAt}, createdAt=${t.createdAt}, turnNumber=${t.turnNumber}`);
-    });
+    // Cargar clientes y servicios con una sola query adicional (para payload)
+    const ids = tickets.map((t) => t.idClient).filter(Boolean);
+    const clients = await Client.findAll({ where: { idClient: ids } });
+    const clientMap = Object.fromEntries(clients.map((c) => [c.idClient, c]));
 
-    res.json(tickets.map((t) => toTicketPayload(t, t.Client, t.Service)));
+    const payload = await Promise.all(
+      tickets.map(async (t) => {
+        const service = svc; // ya cargado
+        const client = clientMap[t.idClient] || null;
+        return toTicketPayload(t, client, service);
+      })
+    );
+
+    console.log(
+      `🎯 Orden SQL literal aplicado correctamente (${payload.length} tickets)`
+    );
+
+    return res.json(payload);
   } catch (error) {
-    console.error('❌ [findAll] Error:', error);
+    console.error("❌ [findAll literal] Error:", error);
     res.status(500).json({ error: error.message });
   }
 };
+
 
 exports.findAllDispatched = async (req, res) => {
   try {
