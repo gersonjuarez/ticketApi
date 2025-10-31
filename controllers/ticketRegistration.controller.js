@@ -26,8 +26,8 @@ const buildOrderForCashier = (cashierId = 0) => {
     [
       sequelize.literal(`
         CASE
-          WHEN "forcedToCashierId" = ${cid} THEN 0
-          WHEN "forcedToCashierId" IS NULL THEN 1
+          WHEN \`forcedToCashierId\` = ${cid} THEN 0
+          WHEN \`forcedToCashierId\` IS NULL THEN 1
           ELSE 2
         END
       `),
@@ -35,32 +35,33 @@ const buildOrderForCashier = (cashierId = 0) => {
     ],
     ["idTicketStatus", "ASC"],
 
-    // 2️⃣ Nueva lógica híbrida: los transferidos marcan un punto de corte
+    // 2️⃣ Nueva lógica híbrida: los transferidos se insertan antes de los nuevos locales
     [
       sequelize.literal(`
         CASE
-          WHEN "transferredAt" IS NOT NULL THEN
+          WHEN \`transferredAt\` IS NOT NULL THEN
             (
-              SELECT MAX("createdAt")
-              FROM "ticketregistrations" x
-              WHERE x."idService" = "ticketregistrations"."idService"
-              AND x."transferredAt" IS NOT NULL
+              SELECT MAX(\`createdAt\`)
+              FROM \`ticketregistrations\` x
+              WHERE x.\`idService\` = \`ticketregistrations\`.\`idService\`
+              AND x.\`transferredAt\` IS NOT NULL
             )
-          ELSE "createdAt"
+          ELSE \`createdAt\`
         END
       `),
       "ASC",
     ],
 
-    // 3️⃣ FIFO por fecha de creación dentro de su grupo
+    // 3️⃣ FIFO interno
     ["createdAt", "ASC"],
     ["turnNumber", "ASC"],
     ["updatedAt", "ASC"],
   ];
 
-  console.log('⚙️ [buildOrderForCashier] Orden nuevo aplicado:', JSON.stringify(order, null, 2));
+  console.log("⚙️ [buildOrderForCashier] Nuevo orden compatible con MySQL:", JSON.stringify(order, null, 2));
   return order;
 };
+
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
   if (!svcId) return baseWhere;
