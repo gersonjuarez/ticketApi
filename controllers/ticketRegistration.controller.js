@@ -341,53 +341,69 @@ exports.create = async (req, res, next) => {
     }
 
     // 3) Reintento de creación con transacción (colisiones únicas)
-    const maxAttempts = 3;
-    let createdTicket = null;
-    let lastErr = null;
+// 3) Reintento de creación con transacción (colisiones únicas)
+const maxAttempts = 3;
+let createdTicket = null;
+let lastErr = null;
 
-    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-      const t = await sequelize.transaction({
-        isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
-      });
-      try {
-        // Número de turno por día (America/Guatemala) + correlativo 3 dígitos
-        const turnNumber = await getNextTurnNumber(idService, t);
-        const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
+for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+  const t = await sequelize.transaction({
+    isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
+  });
+  try {
+    // 🧮 Buscar el último ticket transferido (si existe)
+    const lastTransferred = await TicketRegistration.findOne({
+      where: { idService, status: true, transferredAt: { [Op.ne]: null } },
+      order: [["transferredAt", "DESC"], ["createdAt", "DESC"]],
+      transaction: t,
+    });
 
-        const ticket = await TicketRegistration.create(
-          {
-            turnNumber,
-            idTicketStatus: STATUS.PENDIENTE,
-            idClient: client.idClient,
-            idService,
-            idCashier: null,
-            status: true,
-            correlativo,
-            forcedToCashierId: null,
-            printStatus: "pending",
-          },
-          { transaction: t }
-        );
-
-        await t.commit();
-        createdTicket = ticket;
-        lastErr = null;
-        break;
-      } catch (err) {
-        try {
-          if (t.finished !== "commit") await t.rollback();
-        } catch {}
-        lastErr = err;
-        if (isUniqueError(err) && attempt < maxAttempts) {
-          // pequeño backoff aleatorio
-          await new Promise((r) =>
-            setTimeout(r, Math.floor(Math.random() * 25) + 10)
-          );
-          continue;
-        }
-        break;
-      }
+    let turnNumber;
+    if (lastTransferred) {
+      // ✅ Si hay transferido, continuar desde su turnNumber
+      turnNumber = lastTransferred.turnNumber + 1;
+      console.log(`➡️ Nuevo turno posterior a transferido: ${turnNumber}`);
+    } else {
+      // ⚙️ Caso normal
+      turnNumber = await getNextTurnNumber(idService, t);
     }
+
+    const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
+
+    const ticket = await TicketRegistration.create(
+      {
+        turnNumber,
+        idTicketStatus: STATUS.PENDIENTE,
+        idClient: client.idClient,
+        idService,
+        idCashier: null,
+        status: true,
+        correlativo,
+        forcedToCashierId: null,
+        printStatus: "pending",
+      },
+      { transaction: t }
+    );
+
+    await t.commit();
+    createdTicket = ticket;
+    lastErr = null;
+    break;
+  } catch (err) {
+    try {
+      if (t.finished !== "commit") await t.rollback();
+    } catch {}
+    lastErr = err;
+    if (isUniqueError(err) && attempt < maxAttempts) {
+      await new Promise((r) =>
+        setTimeout(r, Math.floor(Math.random() * 25) + 10)
+      );
+      continue;
+    }
+    break;
+  }
+}
+
 
     if (!createdTicket) {
       if (lastErr) return next(lastErr);
@@ -1145,6 +1161,15 @@ exports.transfer = async (req, res) => {
           queued: false,
         });
       }
+
+      // 🧩 NUEVO: fuerza actualización del cajero destino en tiempo real
+      if (toCashierId) {
+        io.to(`cashier:${toCashierId}`).emit("force-refresh", {
+          reason: "ticket-transferred",
+          timestamp: Date.now(),
+        });
+        console.log(`[transfer] 🔄 force-refresh enviado al cajero destino ${toCashierId}`);
+      }
     }
 
     return res.json({
@@ -1161,4 +1186,4 @@ exports.transfer = async (req, res) => {
       details: e.errors?.map((er) => er.message) || null,
     });
   }
-};  
+};
