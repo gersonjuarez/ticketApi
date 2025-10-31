@@ -1,4 +1,3 @@
-ahora esto 
 const { Op, Transaction } = require("sequelize");
 const {
   TicketRegistration,
