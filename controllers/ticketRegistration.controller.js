@@ -23,7 +23,7 @@ const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
 
   const order = [
-    // 1️⃣ Prioriza los tickets reservados al cajero actual
+    // 1️⃣ Prioriza reservados al cajero actual
     [
       sequelize.literal(`
         CASE
@@ -35,28 +35,33 @@ const buildOrderForCashier = (cashierId = 0) => {
       "ASC",
     ],
 
-    // 2️⃣ Prioriza los pendientes antes de los atendidos
+    // 2️⃣ Pendientes antes que en atención
     ["idTicketStatus", "ASC"],
 
-    // 3️⃣ Orden híbrido: los transferidos van antes de los nuevos locales
+    // 3️⃣ Orden de transferencia / creación:
     [
       sequelize.literal(`
         CASE
-          WHEN \`TicketRegistration\`.\`transferredAt\` IS NOT NULL THEN
-            \`TicketRegistration\`.\`createdAt\`
-          ELSE \`TicketRegistration\`.\`createdAt\`
+          WHEN \`TicketRegistration\`.\`transferredAt\` IS NULL THEN 0
+          ELSE 1
         END
       `),
       "ASC",
     ],
 
-    // 4️⃣ FIFO puro dentro de su grupo
-    ["createdAt", "ASC"],
+    // 4️⃣ Entre transferidos o creados, usa la fecha más antigua primero
+    [
+      sequelize.literal(`
+        COALESCE(\`TicketRegistration\`.\`createdAt\`, '9999-12-31')
+      `),
+      "ASC",
+    ],
+
+    // 5️⃣ FIFO
     ["turnNumber", "ASC"],
-    ["updatedAt", "ASC"],
   ];
 
-  console.log("⚙️ buildOrderForCashier corregido (sin ambigüedad SQL)");
+  console.log("⚙️ buildOrderForCashier actualizado con lógica de transferencias");
   return order;
 };
 
@@ -550,45 +555,14 @@ exports.getTicketsForCashier = async (req, res) => {
       ],
     };
 
-  const queueTickets = await TicketRegistration.findAll({
-  where: queueWhere,
-  include: [{ model: Client }, { model: Service }],
-  order: [
-    // 1️⃣ Prioridad de reserva (forzados al cajero actual)
-    [
-      sequelize.literal(`
-        CASE
-          WHEN "forcedToCashierId" = ${cashierId} THEN 0
-          WHEN "forcedToCashierId" IS NULL THEN 1
-          ELSE 2
-        END
-      `),
-      "ASC",
-    ],
-
-    // 2️⃣ Nueva lógica: ubicar transferidos justo antes de los locales nuevos
-    [
-      sequelize.literal(`
-        CASE
-          WHEN "transferredAt" IS NOT NULL THEN
-            (
-              SELECT MAX("createdAt")
-              FROM "ticketregistrations" x
-              WHERE x."idService" = t."idService"
-              AND x."transferredAt" IS NOT NULL
-            )
-          ELSE "createdAt"
-        END
-      `),
-      "ASC",
-    ],
-
-    // 3️⃣ FIFO entre iguales
-    ["createdAt", "ASC"],
-    ["turnNumber", "ASC"],
-  ],
-  model: TicketRegistration,
+const queueTickets = await TicketRegistration.findAll({
   as: "t",
+  where: queueWhere,
+  include: [
+    { model: Client, as: "Client", on: sequelize.literal("t.idClient = Client.idClient") },
+    { model: Service, as: "Service", on: sequelize.literal("t.idService = Service.idService") },
+  ],
+  order: buildOrderForCashier(cashierId),
 });
 
     const response = {
