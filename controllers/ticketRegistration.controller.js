@@ -22,36 +22,43 @@ const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
 const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
   const order = [
+    // 1️⃣ Prioriza los reservados al cajero actual
     [
       sequelize.literal(`
         CASE
-          WHEN "forcedToCashierId" = ${cid} THEN 0   -- prioridad: reservados para mí
-          WHEN "forcedToCashierId" IS NULL THEN 1    -- luego los normales
-          ELSE 2                                     -- y al final los forzados a otros
+          WHEN "forcedToCashierId" = ${cid} THEN 0
+          WHEN "forcedToCashierId" IS NULL THEN 1
+          ELSE 2
         END
       `),
       "ASC",
     ],
-    ["idTicketStatus", "ASC"],       // pendientes primero
+    ["idTicketStatus", "ASC"],
+
+    // 2️⃣ Nueva lógica híbrida: los transferidos marcan un punto de corte
     [
       sequelize.literal(`
-        CASE 
-          WHEN "transferredAt" IS NULL THEN 0  -- No trasladados primero
-          ELSE 1                               -- Trasladados después
+        CASE
+          WHEN "transferredAt" IS NOT NULL THEN
+            (
+              SELECT MAX("createdAt")
+              FROM "ticketregistrations" x
+              WHERE x."idService" = "ticketregistrations"."idService"
+              AND x."transferredAt" IS NOT NULL
+            )
+          ELSE "createdAt"
         END
       `),
-      "ASC"
+      "ASC",
     ],
-    ["createdAt", "ASC"],           // FIFO real por creación
-    ["turnNumber", "ASC"],          // Solo como desempate
+
+    // 3️⃣ FIFO por fecha de creación dentro de su grupo
+    ["createdAt", "ASC"],
+    ["turnNumber", "ASC"],
     ["updatedAt", "ASC"],
-   
   ];
-  
-  // 🔍 LOG DEL ORDENAMIENTO
-  console.log('⚙️ [buildOrderForCashier] Orden para cashier:', cashierId);
-  console.log('⚙️ [buildOrderForCashier] Ordenamiento:', JSON.stringify(order, null, 2));
-  
+
+  console.log('⚙️ [buildOrderForCashier] Orden nuevo aplicado:', JSON.stringify(order, null, 2));
   return order;
 };
 
