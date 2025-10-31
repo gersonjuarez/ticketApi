@@ -328,23 +328,17 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
   });
   try {
-    // 🧮 Buscar el último ticket transferido (si existe)
-    const lastTransferred = await TicketRegistration.findOne({
-      where: { idService, status: true, transferredAt: { [Op.ne]: null } },
-      order: [["transferredAt", "DESC"], ["createdAt", "DESC"]],
+    // 🧮 Buscar el último ticket del servicio (transferido o no)
+    const lastTicket = await TicketRegistration.findOne({
+      where: { idService, status: true },
+      order: [
+        [sequelize.literal("COALESCE(transferredAt, createdAt)"), "DESC"],
+        ["turnNumber", "DESC"],
+      ],
       transaction: t,
     });
 
-    let turnNumber;
-    if (lastTransferred) {
-      // ✅ Si hay transferido, continuar desde su turnNumber
-      turnNumber = lastTransferred.turnNumber + 1;
-      console.log(`➡️ Nuevo turno posterior a transferido: ${turnNumber}`);
-    } else {
-      // ⚙️ Caso normal
-      turnNumber = await getNextTurnNumber(idService, t);
-    }
-
+    const turnNumber = lastTicket ? lastTicket.turnNumber + 1 : 1;
     const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
 
     const ticket = await TicketRegistration.create(
@@ -380,6 +374,7 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     break;
   }
 }
+
 
 
     if (!createdTicket) {
