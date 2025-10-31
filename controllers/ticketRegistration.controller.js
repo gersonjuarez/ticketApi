@@ -587,7 +587,6 @@ exports.getTicketsForCashier = async (req, res) => {
     ["createdAt", "ASC"],
     ["turnNumber", "ASC"],
   ],
-  tableHint: sequelize.TableHints.NOLOCK, // opcional
   model: TicketRegistration,
   as: "t",
 });
