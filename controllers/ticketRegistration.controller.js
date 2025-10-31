@@ -21,8 +21,9 @@ const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
 const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
 
+  // ✅ Orden optimizado para MySQL, sin subconsultas y con prioridad funcional:
   const order = [
-    // 1️⃣ Tickets reservados al cajero actual primero
+    // 1️⃣ Reservados al cajero actual primero
     [
       sequelize.literal(`
         CASE
@@ -37,32 +38,28 @@ const buildOrderForCashier = (cashierId = 0) => {
     // 2️⃣ Pendientes primero
     ["idTicketStatus", "ASC"],
 
-    // 3️⃣ Prioridad: los transferidos se ordenan por el máximo createdAt de todos los transferidos de ese servicio
+    // 3️⃣ Tickets no trasladados primero, trasladados después
     [
       sequelize.literal(`
         CASE 
-          WHEN \`transferredAt\` IS NOT NULL THEN (
-            SELECT MAX(x.\`createdAt\`)
-            FROM \`ticketregistrations\` x
-            WHERE x.\`idService\` = \`TicketRegistration\`.\`idService\`
-              AND x.\`transferredAt\` IS NOT NULL
-          )
-          ELSE \`TicketRegistration\`.\`createdAt\`
+          WHEN \`transferredAt\` IS NULL THEN 0 
+          ELSE 1 
         END
       `),
       "ASC",
     ],
 
-    // 4️⃣ FIFO por fecha de creación
+    // 4️⃣ FIFO puro por fecha de creación (asegura que SEN-005 quede después del último traslado)
     ["createdAt", "ASC"],
 
     // 5️⃣ Desempate por número de turno
     ["turnNumber", "ASC"],
   ];
 
-  console.log("⚙️ buildOrderForCashier actualizado con subconsulta para priorizar transferidos");
+  console.log("⚙️ buildOrderForCashier actualizado → Orden funcional en MySQL con prioridad para transferidos");
   return order;
 };
+
 
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
