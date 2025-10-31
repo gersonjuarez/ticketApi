@@ -22,38 +22,45 @@ const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
 
   const order = [
+    // 1️⃣ Tickets reservados al cajero actual primero
     [
       sequelize.literal(`
         CASE
-          WHEN \`forcedToCashierId\` = ${cid} THEN 0   -- prioridad: reservados para mí
-          WHEN \`forcedToCashierId\` IS NULL THEN 1    -- luego los normales
-          ELSE 2                                       -- y al final los forzados a otros
+          WHEN \`forcedToCashierId\` = ${cid} THEN 0
+          WHEN \`forcedToCashierId\` IS NULL THEN 1
+          ELSE 2
         END
       `),
       "ASC",
     ],
-    ["idTicketStatus", "ASC"], // pendientes primero
+
+    // 2️⃣ Pendientes primero
+    ["idTicketStatus", "ASC"],
+
+    // 3️⃣ Prioridad: los transferidos se ordenan por el máximo createdAt de todos los transferidos de ese servicio
     [
       sequelize.literal(`
         CASE 
-          WHEN \`transferredAt\` IS NULL THEN 0  -- No trasladados primero
-          ELSE 1                                 -- Trasladados después
+          WHEN \`transferredAt\` IS NOT NULL THEN (
+            SELECT MAX(x.\`createdAt\`)
+            FROM \`ticketregistrations\` x
+            WHERE x.\`idService\` = \`TicketRegistration\`.\`idService\`
+              AND x.\`transferredAt\` IS NOT NULL
+          )
+          ELSE \`TicketRegistration\`.\`createdAt\`
         END
       `),
       "ASC",
     ],
-    [
-      sequelize.literal(`
-        COALESCE(\`TicketRegistration\`.\`createdAt\`, '9999-12-31')
-      `),
-      "ASC",
-    ],
+
+    // 4️⃣ FIFO por fecha de creación
     ["createdAt", "ASC"],
+
+    // 5️⃣ Desempate por número de turno
     ["turnNumber", "ASC"],
-    ["updatedAt", "ASC"],
   ];
 
-  console.log("⚙️ buildOrderForCashier actualizado (MySQL safe, prioridad correcta para transferidos)");
+  console.log("⚙️ buildOrderForCashier actualizado con subconsulta para priorizar transferidos");
   return order;
 };
 
