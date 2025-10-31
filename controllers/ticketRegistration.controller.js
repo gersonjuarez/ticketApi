@@ -567,15 +567,17 @@ order: [
   [
     sequelize.literal(`
       CASE
-        WHEN "forcedToCashierId" = ${cashierId} THEN 0
-        WHEN "forcedToCashierId" IS NULL THEN 1
+        WHEN \`TicketRegistration\`.\`forcedToCashierId\` = ${cashierId} THEN 0
+        WHEN \`TicketRegistration\`.\`forcedToCashierId\` IS NULL THEN 1
         ELSE 2
       END
     `),
     "ASC",
   ],
   [
-    sequelize.literal(`COALESCE("transferredAt", "createdAt")`),
+    sequelize.literal(`
+      COALESCE(\`TicketRegistration\`.\`transferredAt\`, \`TicketRegistration\`.\`createdAt\`)
+    `),
     "ASC",
   ],
   ["turnNumber", "ASC"],
