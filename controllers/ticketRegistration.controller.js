@@ -21,13 +21,16 @@ const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
 // Prioriza reservados para el cajero y asegura FIFO real por turnNumber
 const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
+  const dialect = sequelize.getDialect?.() || "mysql";
+
+  const quote = dialect === "postgres" ? `"` : "`";
+
   const order = [
-    // 1️⃣ Prioriza los reservados al cajero actual
     [
       sequelize.literal(`
         CASE
-          WHEN \`forcedToCashierId\` = ${cid} THEN 0
-          WHEN \`forcedToCashierId\` IS NULL THEN 1
+          WHEN ${quote}forcedToCashierId${quote} = ${cid} THEN 0
+          WHEN ${quote}forcedToCashierId${quote} IS NULL THEN 1
           ELSE 2
         END
       `),
@@ -35,32 +38,24 @@ const buildOrderForCashier = (cashierId = 0) => {
     ],
     ["idTicketStatus", "ASC"],
 
-    // 2️⃣ Nueva lógica híbrida: los transferidos se insertan antes de los nuevos locales
     [
       sequelize.literal(`
         CASE
-          WHEN \`transferredAt\` IS NOT NULL THEN
-            (
-              SELECT MAX(\`createdAt\`)
-              FROM \`ticketregistrations\` x
-              WHERE x.\`idService\` = \`ticketregistrations\`.\`idService\`
-              AND x.\`transferredAt\` IS NOT NULL
-            )
-          ELSE \`createdAt\`
+          WHEN ${quote}transferredAt${quote} IS NOT NULL THEN ${quote}createdAt${quote}
+          ELSE ${quote}createdAt${quote}
         END
       `),
       "ASC",
     ],
-
-    // 3️⃣ FIFO interno
     ["createdAt", "ASC"],
     ["turnNumber", "ASC"],
     ["updatedAt", "ASC"],
   ];
 
-  console.log("⚙️ [buildOrderForCashier] Nuevo orden compatible con MySQL:", JSON.stringify(order, null, 2));
+  console.log("⚙️ buildOrderForCashier (modo híbrido detectado):", dialect);
   return order;
 };
+
 
 
 const applyServiceOrForced = (baseWhere, svcId, idCashierQ, respectForced) => {
