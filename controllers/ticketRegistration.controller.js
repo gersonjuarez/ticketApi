@@ -329,14 +329,18 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
   });
   try {
     // 🧮 Buscar el último ticket del servicio (transferido o no)
-    const lastTicket = await TicketRegistration.findOne({
-      where: { idService, status: true },
-      order: [
-        [sequelize.literal("COALESCE(transferredAt, createdAt)"), "DESC"],
-        ["turnNumber", "DESC"],
-      ],
-      transaction: t,
-    });
+ const lastTicket = await TicketRegistration.findOne({
+  where: {
+    idService,
+    status: true,
+    transferredAt: null, 
+  },
+  order: [
+    ["createdAt", "DESC"],
+    ["turnNumber", "DESC"],
+  ],
+  transaction: t,
+});
 
     const turnNumber = lastTicket ? lastTicket.turnNumber + 1 : 1;
     const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
@@ -1125,14 +1129,19 @@ exports.transfer = async (req, res) => {
       }
 
       // 🔔 Notifica al cajero origen (para liberar su vista)
-      if (fromCashierId) {
-        io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
-          ticket: socketPayload,
-          fromCashierId,
-          toCashierId,
-          queued: false,
-        });
-      }
+  if (fromCashierId) {
+  io.to(`cashier:${fromCashierId}`).emit("ticket-transferred", {
+    ticket: socketPayload,
+    fromCashierId,
+    toCashierId,
+    queued: false,
+  });
+
+  // 🟢 NUEVO EVENTO — quita el ticket sin recargar
+  io.to(`cashier:${fromCashierId}`).emit("remove-ticket", {
+    idTicketRegistration: idTicketRegistration,
+  });
+}
 
       // 🧩 NUEVO: fuerza actualización del cajero destino en tiempo real
       if (toCashierId) {
