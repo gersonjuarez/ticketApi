@@ -20,23 +20,30 @@ const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
 // Prioriza reservados para el cajero y asegura FIFO real por turnNumber
 const buildOrderForCashier = (cashierId = 0) => {
   const cid = Number(cashierId) || 0;
-  const order = [
+
+  return [
     [
       sequelize.literal(`
         CASE
-          WHEN forcedToCashierId = ${cid} THEN 0
-          WHEN forcedToCashierId IS NULL THEN 1
+          WHEN \`TicketRegistration\`.\`forcedToCashierId\` = ${cid} THEN 0
+          WHEN \`TicketRegistration\`.\`forcedToCashierId\` IS NULL THEN 1
           ELSE 2
         END
       `),
       "ASC",
     ],
-    [sequelize.literal(`COALESCE(transferredAt, createdAt)`), "ASC"],
-    ["turnNumber", "ASC"],
+    [
+      sequelize.literal(`
+        COALESCE(
+          \`TicketRegistration\`.\`transferredAt\`,
+          \`TicketRegistration\`.\`createdAt\`
+        )
+      `),
+      "ASC",
+    ],
+    [sequelize.col("TicketRegistration.turnNumber"), "ASC"],
   ];
-  return order;
 };
-
 
 
 
