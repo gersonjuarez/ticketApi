@@ -335,10 +335,10 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     status: true,
     transferredAt: null, 
   },
-order: [
-  ["TicketRegistration", "createdAt", "DESC"],
-  ["turnNumber", "DESC"],
-],
+  order: [
+    ["createdAt", "DESC"],
+    ["turnNumber", "DESC"],
+  ],
   transaction: t,
 });
 
