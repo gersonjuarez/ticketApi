@@ -328,7 +328,7 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
   });
   try {
-    // 🧮 Buscar el último ticket del servicio (transferido o no)
+
  const lastTicket = await TicketRegistration.findOne({
   where: {
     idService,
