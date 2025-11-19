@@ -195,7 +195,7 @@ function emitToCashierDirect(idCashier, event, payload) {
   }
 }
 // =========================================================
-//  🔥 NOTIFICACIONES PRINCIPALES (ARREGLADAS)
+//   NOTIFICACIONES PRINCIPALES (ARREGLADAS)
 // =========================================================
 
 const notifyTicketChange = async (prefix, action, ticket, assignedTo = null) => {

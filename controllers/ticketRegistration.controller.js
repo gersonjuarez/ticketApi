@@ -12,9 +12,9 @@ const {
 } = require("../models");
 const Attendance = require("../services/attendance.service");
 const tz = require('date-fns-tz');
-
+const { getNextTurnNumberAtomic } = require("../utils/turnCounter");
 // Helpers nuevos (asegúrate de tener los archivos en utils/)
-const { getNextTurnNumber, padN } = require("../utils/turnNumbers");
+const {  padN } = require("../utils/turnNumbers");
 const { fmtGuatemalaYYYYMMDDHHmm } = require("../utils/time-tz");
 // Prioriza tickets reservados para el cajero dado (0 = mayor prioridad)
 // Prioriza reservados para el cajero y asegura FIFO real por turnNumber
@@ -335,21 +335,8 @@ for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
   });
   try {
+const turnNumber = await getNextTurnNumberAtomic(idService);
 
- const lastTicket = await TicketRegistration.findOne({
-  where: {
-    idService,
-    status: true,
-    transferredAt: null, 
-  },
-  order: [
-    ["createdAt", "DESC"],
-    ["turnNumber", "DESC"],
-  ],
-  transaction: t,
-});
-
-    const turnNumber = lastTicket ? lastTicket.turnNumber + 1 : 1;
     const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
 
     const ticket = await TicketRegistration.create(
