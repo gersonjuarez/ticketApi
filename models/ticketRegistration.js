@@ -70,17 +70,24 @@ TicketRegistration.init(
     },
 
     // ⬇⬇ Ajuste: admite los estados que realmente usamos en el código
-    printStatus: {
-      type: DataTypes.ENUM("pending", "sent", "printed", "error", "failed"),
-      allowNull: false,
-      defaultValue: "pending",
-      field: "print_status",
-    },
-    printedAt: {
-      type: DataTypes.DATE,
-      allowNull: true,
-      field: "printed_at",
-    },
+printStatus: {
+  type: DataTypes.ENUM(
+    "pending",   // creado
+    "sent",      // enviado a impresora
+    "printed",   // impresión confirmada
+    "failed",    // error
+    "dead"       // expirado/desechado
+  ),
+  allowNull: false,
+  defaultValue: "pending",
+  field: "print_status",
+},
+
+printedAt: {
+  type: DataTypes.DATE,
+  allowNull: true,
+  field: "printed_at",
+},
 
     // ✅ AGREGA ESTE CAMPO FALTANTE
 transferredAt: {

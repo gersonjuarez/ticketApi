@@ -10,36 +10,29 @@ module.exports = (sequelize, DataTypes) => {
   PrintOutbox.init(
     {
       id: { type: DataTypes.BIGINT, autoIncrement: true, primaryKey: true },
-      ticket_id: { type: DataTypes.INTEGER, allowNull: true }, // puede venir null (jobs sin ticket)
+      ticket_id: { type: DataTypes.INTEGER, allowNull: true },
       location_id: { type: DataTypes.STRING(100), allowNull: false },
 
-    
       payload: {
         type: DataTypes.TEXT,
         allowNull: false,
         get() {
           const raw = this.getDataValue("payload");
-          if (raw == null) return null;
-          if (typeof raw === "object") return raw;
+          if (!raw) return null;
           try { return JSON.parse(raw); } catch { return raw; }
         },
         set(val) {
-          if (typeof val === "string") {
-            this.setDataValue("payload", val);
-          } else {
-            this.setDataValue("payload", JSON.stringify(val ?? {}));
-          }
+          this.setDataValue("payload", typeof val === "string" ? val : JSON.stringify(val ?? {}));
         },
       },
 
-    
       status: {
         type: DataTypes.ENUM("pending", "sent", "failed", "done", "dead"),
         allowNull: false,
         defaultValue: "pending",
       },
 
-      attempts: { type: DataTypes.INTEGER, allowNull: false, defaultValue: 0 },
+      attempts: { type: DataTypes.INTEGER, defaultValue: 0 },
       last_error: { type: DataTypes.TEXT, allowNull: true },
     },
     {
@@ -48,12 +41,49 @@ module.exports = (sequelize, DataTypes) => {
       tableName: "printoutbox",
       timestamps: true,
       freezeTableName: true,
-      indexes: [
-        { fields: ["status"] },
-        { fields: ["ticket_id"] },
-      ],
     }
   );
+
+  /* --------------------------------------------------
+   🔥 HOOK DE SINCRONIZACIÓN (AQUÍ VA)
+  -------------------------------------------------- */
+  PrintOutbox.addHook("afterUpdate", async (job) => {
+    if (!job.ticket_id) return;
+
+    const TicketRegistration = sequelize.models.TicketRegistration;
+
+    let newStatus = null;
+    let printedAt = null;
+
+    switch (job.status) {
+      case "done":
+        newStatus = "printed";
+        printedAt = new Date();
+        break;
+
+      case "failed":
+        newStatus = "failed";
+        break;
+
+      case "dead":
+        newStatus = "dead";
+        break;
+
+      case "sent":
+        newStatus = "sent";
+        break;
+    }
+
+    if (newStatus) {
+      await TicketRegistration.update(
+        {
+          printStatus: newStatus,
+          ...(printedAt && { printedAt }),
+        },
+        { where: { idTicketRegistration: job.ticket_id } }
+      );
+    }
+  });
 
   return PrintOutbox;
 };

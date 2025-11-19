@@ -1101,7 +1101,9 @@ exports.transfer = async (req, res) => {
         correlativo: ticket.correlativo,
         prefix: prefixDestino,
         usuario: ticket.Client?.name || "Sin cliente",
-        modulo: cashierDestino.Service.name,
+        modulo: cashierDestino?.Service?.name 
+     || ticket?.Service?.name 
+     || "Servicio actualizado",
         createdAt: ticket.createdAt,
         idTicketStatus: STATUS.PENDIENTE,
         idCashier: null,
