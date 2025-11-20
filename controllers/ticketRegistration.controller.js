@@ -34,10 +34,11 @@ const buildOrderForCashier = (cashierId = 0) => {
     ],
     [
       sequelize.literal(`
-        COALESCE(
-          \`TicketRegistration\`.\`transferredAt\`,
-          \`TicketRegistration\`.\`createdAt\`
-        )
+        CASE
+          WHEN \`TicketRegistration\`.\`transferredAt\` IS NULL
+            THEN \`TicketRegistration\`.\`createdAt\`
+          ELSE \`TicketRegistration\`.\`transferredAt\`
+        END
       `),
       "ASC",
     ],
@@ -200,15 +201,17 @@ exports.findAll = async (req, res) => {
     t.idTicketStatus IN (1, 2)
     AND (t.idService = ${svcId} OR t.forcedToCashierId = ${idCashierQ})
     AND t.status = true
-  ORDER BY
-    CASE
-      WHEN t.forcedToCashierId = ${idCashierQ} THEN 0
-      WHEN t.forcedToCashierId IS NULL THEN 1
-      ELSE 2
-    END,
-    -- 🔹 Usa la fecha real de ingreso: transferido → transferredAt, normal → createdAt
-    COALESCE(t.transferredAt, t.createdAt) ASC,
-    t.turnNumber ASC;
+ ORDER BY
+  CASE
+    WHEN t.forcedToCashierId = ${idCashierQ} THEN 0
+    WHEN t.forcedToCashierId IS NULL THEN 1
+    ELSE 2
+  END,
+  CASE
+    WHEN t.transferredAt IS NULL THEN t.createdAt
+    ELSE t.transferredAt
+  END ASC,
+  t.turnNumber ASC;
 `;
 
     // Ejecutar la consulta literal
@@ -569,12 +572,17 @@ order: [
   ],
   [
     sequelize.literal(`
-      COALESCE(\`TicketRegistration\`.\`transferredAt\`, \`TicketRegistration\`.\`createdAt\`)
+      CASE
+        WHEN \`TicketRegistration\`.\`transferredAt\` IS NULL
+          THEN \`TicketRegistration\`.\`createdAt\`
+        ELSE \`TicketRegistration\`.\`transferredAt\`
+      END
     `),
     "ASC",
   ],
   ["turnNumber", "ASC"],
 ],
+
     });
 
     const response = {
@@ -1045,16 +1053,17 @@ exports.transfer = async (req, res) => {
 
     await ticket.save({ transaction });
 
-    await TicketHistory.create(
-      {
-        idTicket: idTicketRegistration,
-        fromStatus: STATUS.EN_ATENCION,
-        toStatus: STATUS.PENDIENTE,
-        changedByUser: performedByUserId,
-        timestamp: new Date(),
-      },
-      { transaction }
-    );
+await TicketHistory.create(
+  {
+    idTicket: idTicketRegistration,
+    fromStatus: STATUS.EN_ATENCION,
+    toStatus: STATUS.TRASLADO,     
+    changedByUser: performedByUserId,
+    timestamp: new Date(),
+  },
+  { transaction }
+);
+
 
     if (TicketTransferLog) {
       await TicketTransferLog.create(
