@@ -2,8 +2,9 @@
 const { sequelize } = require('../models');
 
 function padN(n, width = 3) {
-  return String(n).padStart(width, '0');
+  return String(n).padStart(width, "0");
 }
+
 
 async function getNextTurnNumber(serviceId, t) {
   // Fecha de hoy en Guatemala (sin hora)
