@@ -9,6 +9,7 @@ const svc = require('../services/cashierPauseOverview.service');
  * - statusType: 'PAUSE' | 'OUT_OF_SERVICE'
  * - limitTopUsers: número (default 10)
  * - limitLongest: número (default 20)
+ * - pageLongest: número (default 1)      👈 NUEVO
  * - includeDetails: '0' | '1'  (default '1')
  * - groupByCashier: '0' | '1'  (default '0')
  * - limitPerCashier: number (default 50)
@@ -22,6 +23,7 @@ exports.getOverview = async (req, res, next) => {
       statusType = 'PAUSE',
       limitTopUsers = '10',
       limitLongest = '20',
+      pageLongest = '1',              // 👈 NUEVO
       includeDetails = '1',
       groupByCashier = '0',
       limitPerCashier = '50',
@@ -29,16 +31,13 @@ exports.getOverview = async (req, res, next) => {
     } = req.query;
 
     /** =========================
-     * PARSE & VALIDACIONES
+     * PARSE & VALIDACIÓN
      * ========================= */
     const parsed = {
       from: typeof from === 'string' ? from : undefined,
       to: typeof to === 'string' ? to : undefined,
 
-      statusType:
-        statusType === 'OUT_OF_SERVICE'
-          ? 'OUT_OF_SERVICE'
-          : 'PAUSE',
+      statusType: statusType === 'OUT_OF_SERVICE' ? 'OUT_OF_SERVICE' : 'PAUSE',
 
       limitTopUsers:
         Number.isFinite(Number(limitTopUsers))
@@ -49,6 +48,11 @@ exports.getOverview = async (req, res, next) => {
         Number.isFinite(Number(limitLongest))
           ? Number(limitLongest)
           : 20,
+
+      pageLongest:
+        Number.isFinite(Number(pageLongest))
+          ? Number(pageLongest)
+          : 1, // 👈 DEFAULT page 1
 
       includeDetails: includeDetails === '1',
 

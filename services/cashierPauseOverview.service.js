@@ -149,48 +149,81 @@ async function overview({
     { replacements: { statusType, start, end } }
   );
 
-  /* ----------------------------------
-     6) LONGEST PAUSES (FIX LIMIT)
-  ----------------------------------- */
-  const [longest] = await sequelize.query(
-    `
-    SELECT
-      idCashierStatusLog,
-      idCashier,
-      cashierName,
-      comment,
-      startedAt,
-      endedAt,
-      performedByUserId,
-      performedByName,
-      closedByUserId,
-      closedByName,
-      duration_seconds
-    FROM v_cashier_pause_log
-    WHERE statusType = :statusType
-      AND startedAt BETWEEN :start AND :end
-    ORDER BY duration_seconds DESC
-    LIMIT ${Number(limitLongest)};
-    `,
-    { replacements: { statusType, start, end } }
-  );
+/* ----------------------------------
+   6) LONGEST PAUSES (PAGINADO)
+----------------------------------- */
+
+// pageLongest viene del cliente o usa 1 por defecto
+const pageLongest = Number(limitLongest?.page || 1);
+const pageSizeLongest = Number(limitLongest?.pageSize || limitLongest || 20);
+
+const offsetLongest = (pageLongest - 1) * pageSizeLongest;
+
+const [longestRows] = await sequelize.query(
+  `
+  SELECT
+    idCashierStatusLog,
+    idCashier,
+    cashierName,
+    comment,
+    startedAt,
+    endedAt,
+    performedByUserId,
+    performedByName,
+    closedByUserId,
+    closedByName,
+    duration_seconds
+  FROM v_cashier_pause_log
+  WHERE statusType = :statusType
+    AND startedAt BETWEEN :start AND :end
+  ORDER BY duration_seconds DESC
+  LIMIT :pageSize OFFSET :offset;
+  `,
+  {
+    replacements: {
+      statusType,
+      start,
+      end,
+      pageSize: pageSizeLongest,
+      offset: offsetLongest,
+    },
+  }
+);
+
+/* COUNT para saber total real */
+const [longestCountRows] = await sequelize.query(
+  `
+  SELECT COUNT(*) AS total
+  FROM v_cashier_pause_log
+  WHERE statusType = :statusType
+    AND startedAt BETWEEN :start AND :end;
+  `,
+  { replacements: { statusType, start, end } }
+);
+
+const longestPaginated = {
+  rows: longestRows,
+  total: longestCountRows[0].total,
+  page: pageLongest,
+  pageSize: pageSizeLongest,
+};
 
   /* ----------------------------------
      RETURN
   ----------------------------------- */
-  return {
-    range: {
-      from: from || null,
-      to: to || null,
-    },
-    statusType,
-    totals,
-    openNow,
-    topUsers,
-    byCashier,
-    daily,
-    longest,
-  };
+return {
+  range: {
+    from: from || null,
+    to: to || null,
+  },
+  statusType,
+  totals,
+  openNow,
+  topUsers,
+  byCashier,
+  daily,
+  longest: longestPaginated   // 👈 ahora viene paginado
+};
 }
 
 module.exports = { overview };

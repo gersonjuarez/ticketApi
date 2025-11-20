@@ -18,17 +18,22 @@ function buildDateBounds(from, to) {
 }
 
 /**
- * GET /reports/attention-times?from=YYYY-MM-DD&to=YYYY-MM-DD&cashierId?=&serviceId?
+ * GET /reports/attention-times?from=YYYY-MM-DD&to=YYYY-MM-DD&cashierId?=&serviceId?&page?=&limit?=
  * Devuelve:
  *  - items: agregado por cajero+servicio (incluye userNames vinculados a la ventanilla)
  *  - daily: agregado por día
  *  - byCashier: agregado por cajero
- *  - segments: detalle por attendance (con usuario que atendió y quien despachó el ticket)
- *  - byTicket: agregado por ticket (incluye ventanillas y usuarios que lo atendieron)
+ *  - segments: detalle por attendance (con usuario que atendió y quien despachó el ticket) - CON PAGINACIÓN
+ *  - byTicket: agregado por ticket (incluye ventanillas y usuarios que lo atendieron) - CON PAGINACIÓN
  */
 exports.getAttentionTimes = async (req, res) => {
   try {
-    const { from, to, serviceId, cashierId } = req.query;
+    const { from, to, serviceId, cashierId, page = 1, limit = 100 } = req.query;
+    
+    // Validar y convertir parámetros de paginación
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(1000, Math.max(10, parseInt(limit) || 100)); // Límite máximo de 1000
+    const offset = (pageNum - 1) * limitNum;
 
     if (!from || !to) {
       return res.status(400).json({
@@ -150,6 +155,24 @@ exports.getAttentionTimes = async (req, res) => {
     }));
 
     // ---------- D) Detalle de segmentos por ticket (con usuario que atendió y quien despachó) ----------
+    // Primero obtenemos el conteo total
+    const [segmentCountResult] = await sequelize.query(
+      `
+      SELECT COUNT(*) as totalSegments
+      FROM ticketattendance ta
+      LEFT JOIN ticketregistrations tr ON tr.idTicketRegistration = ta.idTicket
+      LEFT JOIN cashiers c ON c.idCashier = ta.idCashier
+      LEFT JOIN services s ON s.idService = ta.idService
+      LEFT JOIN users u  ON u.idCashier = ta.idCashier AND u.status = 1
+      LEFT JOIN users du ON du.idUser   = tr.dispatchedByUser
+      ${whereSql};
+      `,
+      { type: QueryTypes.SELECT, replacements: params }
+    );
+    
+    const totalSegments = segmentCountResult.totalSegments || 0;
+    
+    // Luego obtenemos los datos paginados
     const segmentRows = await sequelize.query(
       `
       SELECT
@@ -174,9 +197,10 @@ exports.getAttentionTimes = async (req, res) => {
       LEFT JOIN users u  ON u.idCashier = ta.idCashier AND u.status = 1
       LEFT JOIN users du ON du.idUser   = tr.dispatchedByUser
       ${whereSql}
-      ORDER BY ta.idTicket ASC, ta.startedAt ASC;
+      ORDER BY ta.idTicket ASC, ta.startedAt ASC
+      LIMIT :limitNum OFFSET :offset;
       `,
-      { type: QueryTypes.SELECT, replacements: params }
+      { type: QueryTypes.SELECT, replacements: { ...params, limitNum, offset } }
     );
 
     const segments = segmentRows.map(r => ({
@@ -239,6 +263,7 @@ exports.getAttentionTimes = async (req, res) => {
     });
 
     const count = items.reduce((acc, it) => acc + (it.atenciones || 0), 0);
+    const totalPages = Math.ceil(totalSegments / limitNum);
 
     return res.json({
       from,
@@ -247,7 +272,17 @@ exports.getAttentionTimes = async (req, res) => {
       items,
       daily,
       byCashier,
-      segments,
+      segments: {
+        data: segments,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total: totalSegments,
+          totalPages,
+          hasNextPage: pageNum < totalPages,
+          hasPrevPage: pageNum > 1
+        }
+      },
       byTicket,
     });
   } catch (err) {
@@ -260,14 +295,19 @@ exports.getAttentionTimes = async (req, res) => {
 };
 
 /**
- * GET /reports/ticket-times?from=YYYY-MM-DD&to=YYYY-MM-DD&cashierId?=&serviceId?&ticketId?
+ * GET /reports/ticket-times?from=YYYY-MM-DD&to=YYYY-MM-DD&cashierId?=&serviceId?&ticketId?&page?=&limit?=
  * Devuelve:
- *  - segments: una fila por attendance (qué ticket fue, cuánto duró, ventanilla y usuario)
- *  - byTicket: agregado por ticket (total, promedio, primeras/últimas marcas)
+ *  - segments: una fila por attendance (qué ticket fue, cuánto duró, ventanilla y usuario) - CON PAGINACIÓN
+ *  - byTicket: agregado por ticket (total, promedio, primeras/últimas marcas) - CON PAGINACIÓN
  */
 exports.getTicketTimes = async (req, res) => {
   try {
-    const { from, to, serviceId, cashierId, ticketId } = req.query;
+    const { from, to, serviceId, cashierId, ticketId, page = 1, limit = 100 } = req.query;
+    
+    // Validar y convertir parámetros de paginación
+    const pageNum = Math.max(1, parseInt(page) || 1);
+    const limitNum = Math.min(1000, Math.max(10, parseInt(limit) || 100));
+    const offset = (pageNum - 1) * limitNum;
 
     if (!from || !to) {
       return res.status(400).json({
@@ -290,7 +330,24 @@ exports.getTicketTimes = async (req, res) => {
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-    // 1) Segmentos por attendance (incluye usuario que atendió y quien despachó)
+    // 1) Obtener conteo total de segmentos
+    const [segCountResult] = await sequelize.query(
+      `
+      SELECT COUNT(*) as totalSegments
+      FROM ticketattendance ta
+      LEFT JOIN ticketregistrations tr ON tr.idTicketRegistration = ta.idTicket
+      LEFT JOIN cashiers  c ON c.idCashier  = ta.idCashier
+      LEFT JOIN services  s ON s.idService  = ta.idService
+      LEFT JOIN users     u ON u.idCashier  = ta.idCashier AND u.status = 1
+      LEFT JOIN users    du ON du.idUser    = tr.dispatchedByUser
+      ${whereSql};
+      `,
+      { type: QueryTypes.SELECT, replacements: params }
+    );
+    
+    const totalSegments = segCountResult.totalSegments || 0;
+
+    // 2) Segmentos por attendance (incluye usuario que atendió y quien despachó) - PAGINADO
     const segRows = await sequelize.query(
       `
       SELECT
@@ -316,9 +373,10 @@ exports.getTicketTimes = async (req, res) => {
       LEFT JOIN users     u ON u.idCashier  = ta.idCashier AND u.status = 1
       LEFT JOIN users    du ON du.idUser    = tr.dispatchedByUser
       ${whereSql}
-      ORDER BY ta.startedAt ASC, ta.idAttendance ASC;
+      ORDER BY ta.startedAt ASC, ta.idAttendance ASC
+      LIMIT :limitNum OFFSET :offset;
       `,
-      { type: QueryTypes.SELECT, replacements: params }
+      { type: QueryTypes.SELECT, replacements: { ...params, limitNum, offset } }
     );
 
     const segments = segRows.map(r => {
@@ -349,7 +407,21 @@ exports.getTicketTimes = async (req, res) => {
       };
     });
 
-    // 2) Agregado por ticket
+    // 3) Conteo total de tickets únicos
+    const [ticketCountResult] = await sequelize.query(
+      `
+      SELECT COUNT(DISTINCT ta.idTicket) as totalTickets
+      FROM ticketattendance ta
+      LEFT JOIN services s ON s.idService = ta.idService
+      LEFT JOIN ticketregistrations tr ON tr.idTicketRegistration = ta.idTicket
+      ${whereSql};
+      `,
+      { type: QueryTypes.SELECT, replacements: params }
+    );
+    
+    const totalTickets = ticketCountResult.totalTickets || 0;
+
+    // 4) Agregado por ticket - PAGINADO
     const aggRows = await sequelize.query(
       `
       SELECT
@@ -366,9 +438,10 @@ exports.getTicketTimes = async (req, res) => {
       LEFT JOIN ticketregistrations tr ON tr.idTicketRegistration = ta.idTicket
       ${whereSql}
       GROUP BY ta.idTicket
-      ORDER BY firstStartedAt ASC, ta.idTicket ASC;
+      ORDER BY firstStartedAt ASC, ta.idTicket ASC
+      LIMIT :limitNum OFFSET :offset;
       `,
-      { type: QueryTypes.SELECT, replacements: params }
+      { type: QueryTypes.SELECT, replacements: { ...params, limitNum, offset } }
     );
 
     const byTicket = aggRows.map(r => {
@@ -394,6 +467,9 @@ exports.getTicketTimes = async (req, res) => {
       };
     });
 
+    const totalPagesSegments = Math.ceil(totalSegments / limitNum);
+    const totalPagesTickets = Math.ceil(totalTickets / limitNum);
+
     return res.json({
       from,
       to,
@@ -402,10 +478,32 @@ exports.getTicketTimes = async (req, res) => {
         cashierId: cashierId ? Number(cashierId) : undefined,
         ticketId: ticketId ? Number(ticketId) : undefined,
       },
-      countSegments: segments.length,
-      countTickets: byTicket.length,
-      segments,
-      byTicket,
+      pagination: {
+        page: pageNum,
+        limit: limitNum,
+      },
+      segments: {
+        data: segments,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total: totalSegments,
+          totalPages: totalPagesSegments,
+          hasNextPage: pageNum < totalPagesSegments,
+          hasPrevPage: pageNum > 1
+        }
+      },
+      byTicket: {
+        data: byTicket,
+        pagination: {
+          page: pageNum,
+          limit: limitNum,
+          total: totalTickets,
+          totalPages: totalPagesTickets,
+          hasNextPage: pageNum < totalPagesTickets,
+          hasPrevPage: pageNum > 1
+        }
+      },
     });
   } catch (err) {
     console.error(err);
