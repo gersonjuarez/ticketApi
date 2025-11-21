@@ -292,14 +292,17 @@ exports.findById = async (req, res) => {
 ============================ */
 exports.create = async (req, res, next) => {
   const { dpi, name, idService: idServiceRaw, locationId } = req.body;
-console.log(locationId,"ver locationID")
+  console.log(locationId, "ver locationID");
+
   try {
     const idService =
       typeof idServiceRaw === "string"
         ? parseInt(idServiceRaw, 10)
         : idServiceRaw;
 
-    // Validaciones
+    // -------------------------
+    // VALIDACIONES
+    // -------------------------
     if (!name || name.trim() === "") {
       return res.status(400).json({ message: "El nombre es obligatorio." });
     }
@@ -309,7 +312,9 @@ console.log(locationId,"ver locationID")
         .json({ message: "El DPI debe tener 13 dígitos numéricos." });
     }
 
-    // 1) Cliente
+    // -------------------------
+    // CLIENTE
+    // -------------------------
     let client;
     if (dpi) {
       const [c] = await Client.findOrCreate({
@@ -321,69 +326,79 @@ console.log(locationId,"ver locationID")
       client = await Client.create({ name, dpi: null });
     }
 
-    // 2) Servicio
+    // -------------------------
+    // SERVICIO
+    // -------------------------
     const service = await Service.findByPk(idService);
     if (!service) {
       return res.status(404).json({ message: "Servicio no encontrado." });
     }
 
-    // 3) Reintento de creación con transacción (colisiones únicas)
-// 3) Reintento de creación con transacción (colisiones únicas)
-const maxAttempts = 3;
-let createdTicket = null;
-let lastErr = null;
+    // -------------------------
+    // REINTENTO DE CREACIÓN (ATÓMICO)
+    // -------------------------
+    const maxAttempts = 3;
+    let createdTicket = null;
+    let lastErr = null;
 
-for (let attempt = 1; attempt <= maxAttempts; attempt++) {
-  const t = await sequelize.transaction({
-    isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
-  });
-  try {
-const turnNumber = await getNextTurnNumberAtomic(idService);
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let t;
 
-    const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
+      try {
+        t = await sequelize.transaction({
+          isolationLevel: Transaction.ISOLATION_LEVELS.READ_COMMITTED,
+        });
 
-    const ticket = await TicketRegistration.create(
-      {
-        turnNumber,
-        idTicketStatus: STATUS.PENDIENTE,
-        idClient: client.idClient,
-        idService,
-        idCashier: null,
-        status: true,
-        correlativo,
-        forcedToCashierId: null,
-        printStatus: "pending",
-      },
-      { transaction: t }
-    );
+        const turnNumber = await getNextTurnNumberAtomic(idService);
+        const correlativo = `${service.prefix}-${padN(turnNumber, 3)}`;
 
-    await t.commit();
-    createdTicket = ticket;
-    lastErr = null;
-    break;
-  } catch (err) {
-    try {
-      if (t.finished !== "commit") await t.rollback();
-    } catch {}
-    lastErr = err;
-    if (isUniqueError(err) && attempt < maxAttempts) {
-      await new Promise((r) =>
-        setTimeout(r, Math.floor(Math.random() * 25) + 10)
-      );
-      continue;
+        const ticket = await TicketRegistration.create(
+          {
+            turnNumber,
+            idTicketStatus: STATUS.PENDIENTE,
+            idClient: client.idClient,
+            idService,
+            idCashier: null,
+            status: true,
+            correlativo,
+            forcedToCashierId: null,
+            printStatus: "pending",
+          },
+          { transaction: t }
+        );
+
+        await t.commit();
+        createdTicket = ticket;
+        lastErr = null;
+        break;
+      } catch (err) {
+        if (t && t.finished !== "commit") {
+          try {
+            await t.rollback();
+          } catch {}
+        }
+
+        lastErr = err;
+
+        if (isUniqueError(err) && attempt < maxAttempts) {
+          await new Promise((r) =>
+            setTimeout(r, Math.floor(Math.random() * 25) + 10)
+          );
+          continue;
+        }
+
+        break;
+      }
     }
-    break;
-  }
-}
-
-
 
     if (!createdTicket) {
       if (lastErr) return next(lastErr);
       return res.status(500).json({ message: "No se pudo crear el ticket." });
     }
 
-    // ====== SOCKETS ======
+    // -------------------------
+    // SOCKETS
+    // -------------------------
     const io = require("../server/socket").getIo?.();
     const room = String(service.prefix || "").toLowerCase();
     const socketPayload = toTicketPayload(createdTicket, client, service);
@@ -393,64 +408,64 @@ const turnNumber = await getNextTurnNumberAtomic(idService);
       io.to("tv").emit("new-ticket", socketPayload);
     }
 
-    // ====== COLA DE IMPRESIÓN ======
-if (locationId) {
- 
-  const existing = await PrintOutbox.findOne({
-    where: {
-      ticket_id: createdTicket.idTicketRegistration,
-      status: { [Op.in]: ["pending"] }, 
-    },
-  });
+    // -------------------------
+    // IMPRESIÓN (PrintOutbox) — CORREGIDA
+    // -------------------------
 
-  if (!existing) {
-    const printPayload = {
-      type: "escpos",
-      header: "SISTEMA DE TURNOS",
-      subHeader: s(service.name, ""),
-      ticketNumber: s(socketPayload.correlativo, "---"),
-      name: s(client?.name, ""),
-      dpi: s(client?.dpi, ""),
-      service: s(service.name, ""),
-      footer: "Gracias por su visita",
-      dateTime: fmtGuatemalaYYYYMMDDHHmm(new Date()),
-    };
+    // Solo imprimir si locationId ES STRING VALIDA
+    const safeLocation =
+      typeof locationId === "string" && locationId.trim() !== ""
+        ? locationId.trim()
+        : null;
 
-    const TTL_MS = 60_000;
-    const expiresAt = new Date(Date.now() + TTL_MS);
+    if (safeLocation) {
+      const existing = await PrintOutbox.findOne({
+        where: {
+          ticket_id: createdTicket.idTicketRegistration,
+          status: { [Op.in]: ["pending"] },
+        },
+      });
 
-    // 👉 Crear el job EN PENDING
-    const newJob = await PrintOutbox.create({
-      ticket_id: createdTicket.idTicketRegistration,
-      location_id: locationId,
-      payload: printPayload,
-      status: "pending", // 👈 NO cambiarlo a sent aquí
-      attempts: 0,
-      expires_at: expiresAt,
+      if (!existing) {
+        const printPayload = {
+          type: "escpos",
+          header: "SISTEMA DE TURNOS",
+          subHeader: s(service.name, ""),
+          ticketNumber: socketPayload.correlativo || "---",
+          name: client?.name || "",
+          dpi: client?.dpi || "",
+          service: service.name,
+          footer: "Gracias por su visita",
+          dateTime: fmtGuatemalaYYYYMMDDHHmm(new Date()),
+        };
+
+        const TTL_MS = 60_000;
+        const expiresAt = new Date(Date.now() + TTL_MS);
+
+        const newJob = await PrintOutbox.create({
+          ticket_id: createdTicket.idTicketRegistration,
+          location_id: safeLocation,
+          payload: printPayload,
+          status: "pending", // pendiente para print-worker
+          attempts: 0,
+          expires_at: expiresAt,
+        });
+
+        console.log(
+          `[PrintOutbox] Job agregado en pending (ID ${newJob.id}) para ${safeLocation}`
+        );
+      }
+    }
+
+    // -------------------------
+    // RESPUESTA FINAL
+    // -------------------------
+    const responsePayload = toCreatedTicketPayload({
+      ticket: createdTicket,
+      client,
+      service,
+      cashier: null,
     });
-
-    // ❌ ANTES: enviabas directo a bridge y cambiabas a "sent"
-    // ❌ Eso provocaba que print-worker nunca reintentara
-    //
-    // ❌ Código removido:
-    // await newJob.update({status: "sent"...})
-    // io.to(`bridge:${locationId}`).emit("print-ticket"...)
-
-    // 👍 Ahora: dejamos que el print-worker lo procese
-    console.log(`[PrintOutbox] Job agregado en pending (ID ${newJob.id})`);
-  }
-}
-
-// Respuesta final de creación
-const responsePayload = toCreatedTicketPayload({
-  ticket: createdTicket,
-  client,
-  service,
-  cashier: null,
-});
-
-return res.status(201).json(responsePayload);
-
 
     return res.status(201).json(responsePayload);
   } catch (err) {
