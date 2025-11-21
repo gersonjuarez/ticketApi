@@ -564,7 +564,7 @@ socket.on("connect", () => {
 });
 
 socket.on("bridge-ack", (msg) => {
-  console.log("🟢 Backend confirmó el bridge:", msg);
+  console.log("Backend confirmó el bridge:", msg);
 });
 
 socket.on("print-ticket", (data) => {
