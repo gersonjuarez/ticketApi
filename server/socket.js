@@ -540,11 +540,6 @@ function init(httpServer, opts = {}) {
 // BRIDGE – registro correcto con backend
 // ============================================
 
-const io = require("socket.io-client");
-const SOCKET_URL = "http://localhost:3001"; 
-// O tu URL real:
-// const SOCKET_URL = "https://tuservidor.com";
-
 // LEER locationId correctamente
 const locationId =
   process.env.LOCATION_ID ||
@@ -569,7 +564,7 @@ socket.on("connect", () => {
 });
 
 socket.on("bridge-ack", (msg) => {
-  console.log("🟢 Backend confirmó el bridge:", msg);
+  console.log("Backend confirmó el bridge:", msg);
 });
 
 socket.on("print-ticket", (data) => {
