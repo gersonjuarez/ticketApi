@@ -394,73 +394,63 @@ const turnNumber = await getNextTurnNumberAtomic(idService);
     }
 
     // ====== COLA DE IMPRESIÓN ======
-    if (locationId) {
-      const existing = await PrintOutbox.findOne({
-        where: {
-          ticket_id: createdTicket.idTicketRegistration,
-          status: { [Op.in]: ["pending", "sent"] },
-        },
-      });
+if (locationId) {
+ 
+  const existing = await PrintOutbox.findOne({
+    where: {
+      ticket_id: createdTicket.idTicketRegistration,
+      status: { [Op.in]: ["pending"] }, 
+    },
+  });
 
-      if (!existing) {
-        const printPayload = {
-          type: "escpos",
-          header: "SISTEMA DE TURNOS",
-          subHeader: s(service.name, ""),
-          ticketNumber: s(socketPayload.correlativo, "---"),
-          name: s(client?.name, ""),
-          dpi: s(client?.dpi, ""),
-          service: s(service.name, ""),
-          footer: "Gracias por su visita",
-          dateTime: fmtGuatemalaYYYYMMDDHHmm(new Date()),
-        };
+  if (!existing) {
+    const printPayload = {
+      type: "escpos",
+      header: "SISTEMA DE TURNOS",
+      subHeader: s(service.name, ""),
+      ticketNumber: s(socketPayload.correlativo, "---"),
+      name: s(client?.name, ""),
+      dpi: s(client?.dpi, ""),
+      service: s(service.name, ""),
+      footer: "Gracias por su visita",
+      dateTime: fmtGuatemalaYYYYMMDDHHmm(new Date()),
+    };
 
-        const TTL_MS = 60_000;
-        const expiresAt = new Date(Date.now() + TTL_MS);
+    const TTL_MS = 60_000;
+    const expiresAt = new Date(Date.now() + TTL_MS);
 
-        const newJob = await PrintOutbox.create({
-          ticket_id: createdTicket.idTicketRegistration,
-          location_id: locationId,
-          payload: printPayload,
-          status: "pending",
-          attempts: 0,
-          expires_at: expiresAt,
-        });
-
-        const socketModule = require("../server/socket");
-        const io2 = socketModule.getIo?.();
-        if (io2) {
-          await newJob.update({
-            status: "sent",
-            attempts: (newJob.attempts || 0) + 1,
-            last_error: null,
-          });
-
-          await TicketRegistration.update(
-            { printStatus: "sent" },
-            {
-              where: {
-                idTicketRegistration: createdTicket.idTicketRegistration,
-              },
-            }
-          );
-
-          io2.to(`bridge:${locationId}`).emit("print-ticket", {
-            jobId: newJob.id,
-            type: printPayload.type,
-            payload: printPayload,
-          });
-        }
-      }
-    }
-
-    // Respuesta
-    const responsePayload = toCreatedTicketPayload({
-      ticket: createdTicket,
-      client,
-      service,
-      cashier: null,
+    // 👉 Crear el job EN PENDING
+    const newJob = await PrintOutbox.create({
+      ticket_id: createdTicket.idTicketRegistration,
+      location_id: locationId,
+      payload: printPayload,
+      status: "pending", // 👈 NO cambiarlo a sent aquí
+      attempts: 0,
+      expires_at: expiresAt,
     });
+
+    // ❌ ANTES: enviabas directo a bridge y cambiabas a "sent"
+    // ❌ Eso provocaba que print-worker nunca reintentara
+    //
+    // ❌ Código removido:
+    // await newJob.update({status: "sent"...})
+    // io.to(`bridge:${locationId}`).emit("print-ticket"...)
+
+    // 👍 Ahora: dejamos que el print-worker lo procese
+    console.log(`[PrintOutbox] Job agregado en pending (ID ${newJob.id})`);
+  }
+}
+
+// Respuesta final de creación
+const responsePayload = toCreatedTicketPayload({
+  ticket: createdTicket,
+  client,
+  service,
+  cashier: null,
+});
+
+return res.status(201).json(responsePayload);
+
 
     return res.status(201).json(responsePayload);
   } catch (err) {
