@@ -536,20 +536,51 @@ function init(httpServer, opts = {}) {
       // 🔥 redistribución inicial
       setTimeout(() => redistributeTickets(prefix), 500);
     });
-// =====================================================
-//  🔥 BRIDGE (IMPRESORAS) - AQUÍ VAN
-// =====================================================
-socket.on("register-bridge", ({ location }) => {
-  console.log(`🟢 Bridge conectado para la tienda: ${location}`);
+// ============================================
+// BRIDGE – registro correcto con backend
+// ============================================
 
-  // El bridge se conecta a su "sala" personalizada
-  socket.join(`bridge:${location}`);
+const io = require("socket.io-client");
+const SOCKET_URL = "http://localhost:3001"; 
+// O tu URL real:
+// const SOCKET_URL = "https://tuservidor.com";
 
-  socket.isBridge = true;
-  socket.bridgeLocation = location;
+// LEER locationId correctamente
+const locationId =
+  process.env.LOCATION_ID ||
+  require("os").hostname() ||
+  "sucursal-central-01";
 
-  socket.emit("bridge-ack", { ok: true, location });
+console.log("📌 Bridge iniciado con locationId:", locationId);
+
+const socket = io(SOCKET_URL, {
+  transports: ["websocket"],
+  reconnection: true,
+  reconnectionAttempts: 50,
+  reconnectionDelay: 2000,
 });
+
+socket.on("connect", () => {
+  console.log("⚡ Socket conectado:", socket.id);
+
+  socket.emit("register-bridge", { location: locationId });
+
+  console.log("📤 Enviado registro:", { location: locationId });
+});
+
+socket.on("bridge-ack", (msg) => {
+  console.log("🟢 Backend confirmó el bridge:", msg);
+});
+
+socket.on("print-ticket", (data) => {
+  console.log("🖨 Ticket recibido para imprimir:", data);
+
+  // TODO: tu función de impresión ESC/POS aquí
+  // printEscPos(data.payload);
+
+  socket.emit("print-done", { jobId: data.jobId });
+});
+
     // =====================================================
     //  TVs
     // =====================================================

@@ -292,7 +292,7 @@ exports.findById = async (req, res) => {
 ============================ */
 exports.create = async (req, res, next) => {
   const { dpi, name, idService: idServiceRaw, locationId } = req.body;
-
+console.log(locationId,"ver locationID")
   try {
     const idService =
       typeof idServiceRaw === "string"
