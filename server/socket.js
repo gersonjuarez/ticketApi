@@ -406,7 +406,7 @@ async function redistributeTickets(prefix) {
   }
 }
 // =========================================================
-//  🔥 PRINT WORKER — MANTENIDO Y REPARADO
+//  PRINT WORKER – EXPLICADO Y CLARO
 // =========================================================
 
 let isProcessingPrintQueue = false;
@@ -419,14 +419,43 @@ async function processPrintQueueBatch(io, batchSize = 15) {
     const { PrintOutbox, TicketRegistration } = require('../models');
 
     const jobs = await PrintOutbox.findAll({
-      where: {
-        status: { [Op.or]: ['pending', '', null] }
-      },
+      where: { status: { [Op.or]: ['pending', '', null] } },
       limit: batchSize,
       order: [['createdAt', 'ASC']]
     });
 
     for (const job of jobs) {
+      const payload = job.payload || {};
+      const type = payload.type || 'escpos';
+      const finalPayload = payload.payload || payload;
+
+      // ============================================================
+      //  🔥 MOTIVO #1 DE QUE NO IMPRIME:
+      //     NO EXISTE EL BRIDGE CONECTADO A LA TIENDA
+      // ============================================================
+
+      const room = `bridge:${job.location_id}`;
+      const roomData = io.sockets.adapter.rooms.get(room);
+
+      if (!roomData || roomData.size === 0) {
+        console.log(
+          `❌ [PrintWorker] NO IMPRIME porque NO hay impresora conectada (${room})`
+        );
+
+        await job.update({
+          attempts: sequelize.literal('(COALESCE(attempts,0)+1)'),
+          last_error: "No hay impresora conectada al bridge"
+        });
+
+        continue; // 🚨 se detiene aquí → no se imprime
+      }
+
+      // ============================================================
+      //   SÍ HAY BRIDGE → SE ENVÍA LA IMPRESIÓN
+      // ============================================================
+
+      console.log(`📤 [PrintWorker] Enviando a la impresora (${room}) → job #${job.id}`);
+
       await job.update({
         status: 'sent',
         attempts: sequelize.literal('(COALESCE(attempts,0)+1)'),
@@ -440,11 +469,8 @@ async function processPrintQueueBatch(io, batchSize = 15) {
         );
       }
 
-      const payload = job.payload || {};
-      const type = payload.type || 'escpos';
-      const finalPayload = payload.payload || payload;
-
-      io.to(`bridge:${job.location_id}`).emit("print-ticket", {
+      // Enviar al bridge
+      io.to(room).emit("print-ticket", {
         jobId: job.id,
         type,
         payload: finalPayload
@@ -510,7 +536,20 @@ function init(httpServer, opts = {}) {
       // 🔥 redistribución inicial
       setTimeout(() => redistributeTickets(prefix), 500);
     });
+// =====================================================
+//  🔥 BRIDGE (IMPRESORAS) - AQUÍ VAN
+// =====================================================
+socket.on("register-bridge", ({ location }) => {
+  console.log(`🟢 Bridge conectado para la tienda: ${location}`);
 
+  // El bridge se conecta a su "sala" personalizada
+  socket.join(`bridge:${location}`);
+
+  socket.isBridge = true;
+  socket.bridgeLocation = location;
+
+  socket.emit("bridge-ack", { ok: true, location });
+});
     // =====================================================
     //  TVs
     // =====================================================
