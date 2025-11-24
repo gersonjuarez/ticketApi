@@ -422,7 +422,12 @@ async function processPrintQueueBatch(io, batchSize = 15) {
       const type = payload.type || 'escpos';
       const finalPayload = payload.payload || payload;
 
-      const room = `bridge:${job.location_id}`;
+      // ============================================================
+      //  🔥 MOTIVO #1 DE QUE NO IMPRIME:
+      //     NO EXISTE EL BRIDGE CONECTADO A LA TIENDA
+      // ============================================================
+
+      const room = `bridge:${String(job.location_id || "").trim()}`;
       const roomData = io.sockets.adapter.rooms.get(room);
 
       if (!roomData || roomData.size === 0) {
@@ -510,8 +515,60 @@ function init(httpServer, opts = {}) {
       pickNextForCashier(prefix, idCashier);
       setTimeout(() => redistributeTickets(prefix), 500);
     });
+    // =====================================================
+    //  🔥 BRIDGE (IMPRESORAS)
+    // =====================================================
+    socket.on("register-bridge", ({ location }) => {
+      const normLocation = String(location || "").trim();
+      console.log(`🟢 Bridge conectado para la tienda: ${normLocation}`);
 
-    // TV
+      // El bridge se conecta a su "sala" personalizada
+      socket.join(`bridge:${normLocation}`);
+
+      socket.isBridge = true;
+      socket.bridgeLocation = normLocation;
+
+      socket.emit("bridge-ack", { ok: true, location: normLocation });
+
+      // Procesar inmediatamente trabajos pendientes al conectar un bridge
+      setTimeout(() => processPrintQueueBatch(io, 25), 200);
+    });
+
+    // ACK de impresión exitosa desde el bridge
+    socket.on("print-done", async ({ jobId }) => {
+      try {
+        const { PrintOutbox, TicketRegistration } = require('../models');
+        const job = await PrintOutbox.findByPk(jobId);
+        if (!job) return;
+
+        // Mantén compatibilidad con ENUM limitado en DB: deja status en 'sent'
+        await job.update({ status: 'sent', last_error: null });
+
+        if (job.ticket_id) {
+          await TicketRegistration.update(
+            { printStatus: 'printed', printedAt: new Date() },
+            { where: { idTicketRegistration: job.ticket_id } }
+          );
+        }
+      } catch (e) {
+        console.error('[bridge print-done ERROR]', e);
+      }
+    });
+
+    // ACK de impresión fallida desde el bridge
+    socket.on("print-failed", async ({ jobId, error }) => {
+      try {
+        const { PrintOutbox } = require('../models');
+        const job = await PrintOutbox.findByPk(jobId);
+        if (!job) return;
+        await job.update({ status: 'failed', last_error: String(error || 'Unknown error') });
+      } catch (e) {
+        console.error('[bridge print-failed ERROR]', e);
+      }
+    });
+    // =====================================================
+    //  TVs
+    // =====================================================
     socket.on("subscribe-tv", () => {
       socket.isTv = true;
       socket.join("tv");
