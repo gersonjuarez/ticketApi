@@ -508,7 +508,13 @@ async function processPrintQueueBatch(io, batchSize = 15) {
       const roomData = io.sockets.adapter.rooms.get(room);
 
       if (!roomData || roomData.size === 0) {
+        // Log detallado de todas las salas bridge activas
+        const allRooms = Array.from(io.sockets.adapter.rooms.keys());
+        const bridgeRooms = allRooms.filter(r => r.startsWith('bridge:'));
+        
         console.log(`❌ [PrintWorker] NO IMPRIME porque NO hay impresora conectada (${room})`);
+        console.log(`📊 [PrintWorker] Salas bridge activas: ${bridgeRooms.length > 0 ? bridgeRooms.join(', ') : 'NINGUNA'}`);
+        console.log(`📊 [PrintWorker] Total sockets conectados: ${io.sockets.sockets.size}`);
 
         await job.update({
           attempts: sequelize.literal('(COALESCE(attempts,0)+1)'),
@@ -518,7 +524,19 @@ async function processPrintQueueBatch(io, batchSize = 15) {
         continue;
       }
 
-      console.log(`📤 [PrintWorker] Enviando a la impresora (${room}) → job #${job.id}`);
+      // Obtener el correlativo para logging
+      let correlativo = 'N/A';
+      if (job.ticket_id) {
+        const ticket = await TicketRegistration.findByPk(job.ticket_id);
+        if (ticket) correlativo = ticket.correlativo;
+      }
+
+      // Verificar si hay múltiples bridges en la sala
+      if (roomData.size > 1) {
+        console.warn(`⚠️ [PrintWorker] ADVERTENCIA: ${roomData.size} bridges conectados en ${room}. Esto puede causar impresiones duplicadas.`);
+      }
+
+      console.log(`📤 [PrintWorker] Enviando a la impresora (${room}) → job #${job.id}, ticket correlativo: ${correlativo}`);
 
       await job.update({
         status: 'sent',
@@ -612,18 +630,39 @@ function init(httpServer, opts = {}) {
       const normLocation = String(location).trim();
       
       if (!normLocation) {
-        console.error("❌ [SOCKET] register-bridge sin location/locationId");
+        console.error("❌ [SOCKET] register-bridge sin location/locationId", { payload, socketId: socket.id });
         socket.emit("bridge-ack", { ok: false, error: "location/locationId requerido" });
         return;
       }
       
-      console.log(`🟢 Bridge conectado para la tienda: ${normLocation}`);
+      console.log(`🟢 Bridge conectado para la tienda: ${normLocation}, socketId: ${socket.id}`);
 
       // El bridge se conecta a su "sala" personalizada
-      socket.join(`bridge:${normLocation}`);
+      const roomName = `bridge:${normLocation}`;
+      
+      // 🔥 IMPORTANTE: Desconectar bridges antiguos de esta ubicación para evitar duplicados
+      const existingRoom = io.sockets.adapter.rooms.get(roomName);
+      if (existingRoom && existingRoom.size > 0) {
+        console.warn(`⚠️ [BRIDGE] Ya existe(n) ${existingRoom.size} bridge(s) en ${roomName}. Desconectando bridge(s) antiguo(s)...`);
+        
+        // Desconectar todos los sockets existentes en la sala
+        for (const oldSocketId of existingRoom) {
+          const oldSocket = io.sockets.sockets.get(oldSocketId);
+          if (oldSocket && oldSocket.id !== socket.id) {
+            console.log(`🔄 [BRIDGE] Desconectando bridge antiguo: ${oldSocketId}`);
+            oldSocket.disconnect(true);
+          }
+        }
+      }
+      
+      socket.join(roomName);
 
       socket.isBridge = true;
       socket.bridgeLocation = normLocation;
+      
+      // Log detallado de bridges conectados
+      const roomData = io.sockets.adapter.rooms.get(roomName);
+      console.log(`📊 [BRIDGE] Sala ${roomName} ahora tiene ${roomData ? roomData.size : 0} socket(s)`);
 
       // Cancelar limpieza diferida si se reconectó en la ventana de gracia
       const bt = bridgeDisconnectTimers.get(normLocation);
@@ -635,22 +674,42 @@ function init(httpServer, opts = {}) {
       setTimeout(() => processPrintQueueBatch(io, 25), 200);
     });
 
+    // ACK de impresión fallida desde el bridge
+    socket.on("print-failed", async ({ jobId, error }) => {
+      try {
+        const { PrintOutbox } = require('../models');
+        const job = await PrintOutbox.findByPk(jobId);
+        if (!job) {
+          console.warn(`⚠️ [print-failed] Job #${jobId} no encontrado`);
+          return;
+        }
+
+        console.error(`❌ [print-failed] Job #${jobId} falló: ${error}`);
+
+        await job.update({
+          status: 'failed',
+          last_error: error || 'Error desconocido desde bridge'
+        });
+      } catch (e) {
+        console.error('[bridge print-failed ERROR]', e);
+      }
+    });
+
     // ACK de impresión exitosa desde el bridge
     socket.on("print-done", async ({ jobId }) => {
       try {
-        const { PrintOutbox, TicketRegistration } = require('../models');
+        const { PrintOutbox } = require('../models');
         const job = await PrintOutbox.findByPk(jobId);
-        if (!job) return;
-
-        // Mantén compatibilidad con ENUM limitado en DB: deja status en 'sent'
-        await job.update({ status: 'sent', last_error: null });
-
-        if (job.ticket_id) {
-          await TicketRegistration.update(
-            { printStatus: 'printed', printedAt: new Date() },
-            { where: { idTicketRegistration: job.ticket_id } }
-          );
+        if (!job) {
+          console.warn(`⚠️ [print-done] Job #${jobId} no encontrado`);
+          return;
         }
+
+        console.log(`✅ [print-done] Job #${jobId} confirmado como impreso. Marcando como 'done'`);
+
+        // Actualizar a 'done' - el hook del modelo sincronizará automáticamente con TicketRegistration
+        await job.update({ status: 'done', last_error: null });
+
       } catch (e) {
         console.error('[bridge print-done ERROR]', e);
       }
