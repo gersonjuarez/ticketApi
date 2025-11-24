@@ -12,6 +12,15 @@ const { sequelize } = require('../models');
 let io;
 
 // =========================================================
+//  RECONEXIÓN – PERIODO DE GRACIA PARA NO PERDER ESTADO
+// =========================================================
+const RECONNECT_GRACE_MS = 15000; // 15s
+const cashierDisconnectTimers = new Map(); // idCashier -> Timeout
+const bridgeDisconnectTimers = new Map();  // location -> Timeout
+const announcerDisconnectTimers = new Map(); // socketId -> Timeout
+const tvDisconnectTimers = new Map();       // socketId -> Timeout
+
+// =========================================================
 //  MAPS DE ESTADO
 // =========================================================
 
@@ -31,6 +40,7 @@ const ALLOW_MULTIPLE_ANNOUNCERS = false;
 
 let activeAnnouncerId = null;
 const announcerSockets = new Set();
+const tvSockets = new Set();
 const ttsGlobalQueue = [];
 let ttsGlobalProcessing = false;
 
@@ -188,6 +198,73 @@ function emitToCashierDirect(idCashier, event, payload) {
         if (s) s.emit(event, payload);
       }
     }
+  }
+}
+
+// =========================================================
+//  LIMPIEZA DIFERIDA DE CAJEROS (RECONEXIÓN SUAVE)
+// =========================================================
+function scheduleCashierCleanup(idCashier, prefix, socketId) {
+  if (!idCashier) return;
+  if (cashierDisconnectTimers.has(idCashier)) return;
+  const timer = setTimeout(() => {
+    cashierDisconnectTimers.delete(idCashier);
+    // Limpieza definitiva si no reconectó
+    cashierActiveSocket.delete(idCashier);
+    const room = String(prefix || '').toLowerCase();
+    const info = serviceQueues.get(room);
+    if (info) info.cashiers.delete(socketId);
+    cashierCurrentDisplay.delete(idCashier);
+    try { redistributeTickets(prefix); } catch {}
+  }, RECONNECT_GRACE_MS);
+  cashierDisconnectTimers.set(idCashier, timer);
+}
+
+function cancelCashierCleanup(idCashier) {
+  const t = cashierDisconnectTimers.get(idCashier);
+  if (t) {
+    clearTimeout(t);
+    cashierDisconnectTimers.delete(idCashier);
+  }
+}
+
+// =========================================================
+//  LIMPIEZA DIFERIDA – ANNOUNCER Y TV
+// =========================================================
+function scheduleAnnouncerCleanup(socketId) {
+  if (!socketId) return;
+  if (announcerDisconnectTimers.has(socketId)) return;
+  const timer = setTimeout(() => {
+    announcerDisconnectTimers.delete(socketId);
+    announcerSockets.delete(socketId);
+    if (socketId === activeAnnouncerId) activeAnnouncerId = null;
+  }, RECONNECT_GRACE_MS);
+  announcerDisconnectTimers.set(socketId, timer);
+}
+
+function cancelAnnouncerCleanup(socketId) {
+  const t = announcerDisconnectTimers.get(socketId);
+  if (t) {
+    clearTimeout(t);
+    announcerDisconnectTimers.delete(socketId);
+  }
+}
+
+function scheduleTvCleanup(socketId) {
+  if (!socketId) return;
+  if (tvDisconnectTimers.has(socketId)) return;
+  const timer = setTimeout(() => {
+    tvDisconnectTimers.delete(socketId);
+    tvSockets.delete(socketId);
+  }, RECONNECT_GRACE_MS);
+  tvDisconnectTimers.set(socketId, timer);
+}
+
+function cancelTvCleanup(socketId) {
+  const t = tvDisconnectTimers.get(socketId);
+  if (t) {
+    clearTimeout(t);
+    tvDisconnectTimers.delete(socketId);
   }
 }
 
@@ -495,6 +572,9 @@ function init(httpServer, opts = {}) {
 
     // CAJERO
     socket.on("register-cashier", ({ idCashier, prefix, idUser }) => {
+      // Cancelar limpieza si estaba programada durante la gracia
+      cancelCashierCleanup(idCashier);
+
       cashierActiveSocket.set(idCashier, socket.id);
       socket.cashierInfo = { idCashier, prefix };
 
@@ -506,7 +586,15 @@ function init(httpServer, opts = {}) {
         serviceQueues.set(room, { cashiers: new Map() });
       }
 
-      serviceQueues.get(room).cashiers.set(socket.id, {
+      const cashiersMap = serviceQueues.get(room).cashiers;
+      // Limpiar entradas obsoletas de este cajero (sockets viejos)
+      for (const [sockId, info] of cashiersMap) {
+        if (info.idCashier === idCashier && sockId !== socket.id) {
+          cashiersMap.delete(sockId);
+        }
+      }
+
+      cashiersMap.set(socket.id, {
         idCashier,
         idUser,
         currentTicket: null
@@ -527,6 +615,10 @@ function init(httpServer, opts = {}) {
 
       socket.isBridge = true;
       socket.bridgeLocation = normLocation;
+
+      // Cancelar limpieza diferida si se reconectó en la ventana de gracia
+      const bt = bridgeDisconnectTimers.get(normLocation);
+      if (bt) { clearTimeout(bt); bridgeDisconnectTimers.delete(normLocation); }
 
       socket.emit("bridge-ack", { ok: true, location: normLocation });
 
@@ -573,6 +665,8 @@ function init(httpServer, opts = {}) {
       socket.isTv = true;
       socket.join("tv");
       socket.emit("subscribed-tv", { ok: true });
+      tvSockets.add(socket.id);
+      cancelTvCleanup(socket.id);
     });
 
     // ANNOUNCER
@@ -580,6 +674,7 @@ function init(httpServer, opts = {}) {
       socket.isAnnouncer = true;
       socket.join("announcer");
       announcerSockets.add(socket.id);
+      cancelAnnouncerCleanup(socket.id);
 
       const leaders = io.sockets.adapter.rooms.get("announcer");
       if (!activeAnnouncerId && leaders && leaders.size > 0) {
@@ -623,19 +718,27 @@ function init(httpServer, opts = {}) {
     socket.on("disconnect", () => {
       if (socket.cashierInfo) {
         const { idCashier, prefix } = socket.cashierInfo;
-        cashierActiveSocket.delete(idCashier);
-
-        const room = prefix.toLowerCase();
-        const info = serviceQueues.get(room);
-        if (info) info.cashiers.delete(socket.id);
-
-        cashierCurrentDisplay.delete(idCashier);
-        redistributeTickets(prefix);
+        // No limpies inmediatamente; agenda limpieza diferida
+        scheduleCashierCleanup(idCashier, prefix, socket.id);
       }
 
       if (socket.isAnnouncer) {
-        announcerSockets.delete(socket.id);
-        if (socket.id === activeAnnouncerId) activeAnnouncerId = null;
+        // Limpieza diferida del announcer y liderazgo
+        scheduleAnnouncerCleanup(socket.id);
+      }
+
+      if (socket.isTv) {
+        // Limpieza diferida de TV
+        scheduleTvCleanup(socket.id);
+      }
+
+      if (socket.isBridge && socket.bridgeLocation) {
+        // Programar ventana de gracia para puentes de impresión
+        const loc = socket.bridgeLocation;
+        const timer = setTimeout(() => {
+          bridgeDisconnectTimers.delete(loc);
+        }, RECONNECT_GRACE_MS);
+        bridgeDisconnectTimers.set(loc, timer);
       }
     });
   });
