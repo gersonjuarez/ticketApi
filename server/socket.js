@@ -434,7 +434,7 @@ async function processPrintQueueBatch(io, batchSize = 15) {
       //     NO EXISTE EL BRIDGE CONECTADO A LA TIENDA
       // ============================================================
 
-      const room = `bridge:${job.location_id}`;
+      const room = `bridge:${String(job.location_id || "").trim()}`;
       const roomData = io.sockets.adapter.rooms.get(room);
 
       if (!roomData || roomData.size === 0) {
@@ -536,51 +536,57 @@ function init(httpServer, opts = {}) {
       // 🔥 redistribución inicial
       setTimeout(() => redistributeTickets(prefix), 500);
     });
-// ============================================
-// BRIDGE – registro correcto con backend
-// ============================================
+    // =====================================================
+    //  🔥 BRIDGE (IMPRESORAS)
+    // =====================================================
+    socket.on("register-bridge", ({ location }) => {
+      const normLocation = String(location || "").trim();
+      console.log(`🟢 Bridge conectado para la tienda: ${normLocation}`);
 
-const io = require("socket.io-client");
-const SOCKET_URL = "http://localhost:3001"; 
-// O tu URL real:
-// const SOCKET_URL = "https://tuservidor.com";
+      // El bridge se conecta a su "sala" personalizada
+      socket.join(`bridge:${normLocation}`);
 
-// LEER locationId correctamente
-const locationId =
-  process.env.LOCATION_ID ||
-  require("os").hostname() ||
-  "sucursal-central-01";
+      socket.isBridge = true;
+      socket.bridgeLocation = normLocation;
 
-console.log("📌 Bridge iniciado con locationId:", locationId);
+      socket.emit("bridge-ack", { ok: true, location: normLocation });
 
-const socket = io(SOCKET_URL, {
-  transports: ["websocket"],
-  reconnection: true,
-  reconnectionAttempts: 50,
-  reconnectionDelay: 2000,
-});
+      // Procesar inmediatamente trabajos pendientes al conectar un bridge
+      setTimeout(() => processPrintQueueBatch(io, 25), 200);
+    });
 
-socket.on("connect", () => {
-  console.log("⚡ Socket conectado:", socket.id);
+    // ACK de impresión exitosa desde el bridge
+    socket.on("print-done", async ({ jobId }) => {
+      try {
+        const { PrintOutbox, TicketRegistration } = require('../models');
+        const job = await PrintOutbox.findByPk(jobId);
+        if (!job) return;
 
-  socket.emit("register-bridge", { location: locationId });
+        // Mantén compatibilidad con ENUM limitado en DB: deja status en 'sent'
+        await job.update({ status: 'sent', last_error: null });
 
-  console.log("📤 Enviado registro:", { location: locationId });
-});
+        if (job.ticket_id) {
+          await TicketRegistration.update(
+            { printStatus: 'printed', printedAt: new Date() },
+            { where: { idTicketRegistration: job.ticket_id } }
+          );
+        }
+      } catch (e) {
+        console.error('[bridge print-done ERROR]', e);
+      }
+    });
 
-socket.on("bridge-ack", (msg) => {
-  console.log("🟢 Backend confirmó el bridge:", msg);
-});
-
-socket.on("print-ticket", (data) => {
-  console.log("🖨 Ticket recibido para imprimir:", data);
-
-  // TODO: tu función de impresión ESC/POS aquí
-  // printEscPos(data.payload);
-
-  socket.emit("print-done", { jobId: data.jobId });
-});
-
+    // ACK de impresión fallida desde el bridge
+    socket.on("print-failed", async ({ jobId, error }) => {
+      try {
+        const { PrintOutbox } = require('../models');
+        const job = await PrintOutbox.findByPk(jobId);
+        if (!job) return;
+        await job.update({ status: 'failed', last_error: String(error || 'Unknown error') });
+      } catch (e) {
+        console.error('[bridge print-failed ERROR]', e);
+      }
+    });
     // =====================================================
     //  TVs
     // =====================================================

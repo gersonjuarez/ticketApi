@@ -291,8 +291,11 @@ exports.findById = async (req, res) => {
    CREAR TICKET con reintento
 ============================ */
 exports.create = async (req, res, next) => {
-  const { dpi, name, idService: idServiceRaw, locationId } = req.body;
-console.log(locationId,"ver locationID")
+  // Normaliza y permite fallback para locationId: body, header o env
+  const { dpi, name, idService: idServiceRaw } = req.body;
+  const rawLocation = req.body?.locationId ?? req.headers['x-location-id'] ?? process.env.PRINT_LOCATION_ID;
+  const locationId = rawLocation ? String(rawLocation).trim() : "";
+  console.log(locationId, "ver locationID");
   try {
     const idService =
       typeof idServiceRaw === "string"
