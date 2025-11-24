@@ -2,7 +2,7 @@
 //  SOCKET GLOBAL – OPTIMIZADO 2025
 //  Conserva 100% tu arquitectura original
 //  Arreglado: refresh, transferencias, módulo, TV sync,
-//  reconexión, queue-updated, impressão, TTS
+//  reconexión, queue-updated, impresión, TTS
 // =========================================================
 
 const { Server } = require('socket.io');
@@ -12,18 +12,18 @@ const { sequelize } = require('../models');
 let io;
 
 // =========================================================
-//  MAPS DE ESTADO (TAL COMO LOS TENÍAS – SOLO OPTIMIZADO)
+//  MAPS DE ESTADO
 // =========================================================
 
 const userActiveSocket = new Map();
 const cashierActiveSocket = new Map();
 
-const serviceQueues = new Map();     // { room: { cashiers: Map(socket, info) } }
-const cashierCurrentDisplay = new Map(); // { idCashier: { currentTicket, isAssigned } }
-const cashierTickets = new Map();    // { prefix_idCashier: { … } }
+const serviceQueues = new Map();    
+const cashierCurrentDisplay = new Map();
+const cashierTickets = new Map();    
 
 // =========================================================
-// TTS GLOBAL (TU ARQUITECTURA ORIGINAL, REPARADA)
+//  TTS GLOBAL
 // =========================================================
 
 const SERIALIZE_ALL_PREFIXES = true;
@@ -37,7 +37,7 @@ let ttsGlobalProcessing = false;
 function makeTtsItem(raw = {}) {
   return {
     id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    prefix: (raw.prefix || "").toString().toLowerCase(),
+    prefix: (raw.prefix || "").toLowerCase(),
     ttsText: raw.ttsText || "",
     numero: raw.numero || null,
     ventanilla: raw.ventanilla || null,
@@ -60,7 +60,7 @@ function getAnnouncerLeader() {
 }
 
 // =========================================================
-//   🔥 TTS GLOBAL – OPTIMIZADO
+//  TTS GLOBAL – PROCESAMIENTO
 // =========================================================
 
 function processTtsGlobalQueue() {
@@ -75,7 +75,6 @@ function processTtsGlobalQueue() {
   ttsGlobalProcessing = true;
 
   if (!haveAnnouncer) {
-    // No announcers → solo UI
     io.to("tv").emit("call-ticket-ui", head.raw);
     ttsGlobalQueue.shift();
     ttsGlobalProcessing = false;
@@ -90,7 +89,6 @@ function processTtsGlobalQueue() {
 
   let leader = getAnnouncerLeader();
   if (!leader) {
-    // fallback
     io.to("announcer").emit("tts-play", head);
   } else {
     leader.emit("tts-play", head);
@@ -124,7 +122,7 @@ function processTtsGlobalQueue() {
 }
 
 // =========================================================
-//    UTILS QUE MANTENGO EXACTOS A TU LÓGICA ORIGINAL
+//  UTILS
 // =========================================================
 
 async function getPrefixByCashierId(idCashier) {
@@ -154,7 +152,6 @@ async function getServiceIdByPrefix(prefix) {
   return svc ? svc.idService : null;
 }
 
-// 🔥 Reparado: modulo siempre correcto
 function toDisplayPayload(prefix, t, overrideModulo = null) {
   return {
     idTicketRegistration: t.idTicketRegistration,
@@ -167,7 +164,7 @@ function toDisplayPayload(prefix, t, overrideModulo = null) {
     dispatchedByUser: t.dispatchedByUser,
     idService: t.idService,
     idClient: t.idClient,
-    prefix: (prefix || t.Service?.prefix || "").toString().toUpperCase(),
+    prefix: (prefix || t.Service?.prefix || "").toUpperCase(),
     status: t.status,
     usuario: 'Sin cliente',
     modulo: String(overrideModulo ?? t.idCashier ?? "—")
@@ -184,7 +181,6 @@ function emitToCashierDirect(idCashier, event, payload) {
     return;
   }
 
-  // fallback (tu lógica original)
   for (const [, serviceInfo] of serviceQueues) {
     for (const [sock, info] of serviceInfo.cashiers) {
       if (info.idCashier === idCashier) {
@@ -194,8 +190,9 @@ function emitToCashierDirect(idCashier, event, payload) {
     }
   }
 }
+
 // =========================================================
-//   NOTIFICACIONES PRINCIPALES (ARREGLADAS)
+//  NOTIFICACIONES PRINCIPALES
 // =========================================================
 
 const notifyTicketChange = async (prefix, action, ticket, assignedTo = null) => {
@@ -205,11 +202,10 @@ const notifyTicketChange = async (prefix, action, ticket, assignedTo = null) => 
     let enriched = { ...ticket };
     let moduleToShow = assignedTo ?? ticket.idCashier;
 
-    // 🔥 Reparado: si se transfiere → mostrar modulo nuevo inmediatamente
     if (assignedTo) {
       const { Cashier, Service } = require('../models');
       const cashier = await Cashier.findByPk(assignedTo, {
-        include: [{ model: Service, attributes: ['prefix'] }]
+        include: [{ model: Service }]
       });
       if (cashier) {
         enriched.idService = cashier.Service.idService;
@@ -249,7 +245,6 @@ const notifyTicketChange = async (prefix, action, ticket, assignedTo = null) => 
       io.to(room).emit("ticket-transferred", payload);
       io.to("tv").emit("ticket-transferred", payload);
 
-      // 🔥 refresh inmediato
       io.to(room).emit("queue-updated", {
         prefix,
         action: "transferred",
@@ -259,24 +254,23 @@ const notifyTicketChange = async (prefix, action, ticket, assignedTo = null) => 
       return;
     }
 
-if (action === "completed") {
-    const payload = { ticket: enriched };
+    if (action === "completed") {
+      const payload = { ticket: enriched };
 
-    io.to(room).emit("ticket-completed", payload);
-    io.to("tv").emit("ticket-completed", payload);
+      io.to(room).emit("ticket-completed", payload);
+      io.to("tv").emit("ticket-completed", payload);
 
-    io.to(room).emit("queue-updated", {
+      io.to(room).emit("queue-updated", {
         prefix,
         action: "completed"
-    });
+      });
 
-    // 🔥 NUEVO: cargar siguiente ticket para el cajero que atendió
-    if (assignedTo) {
+      if (assignedTo) {
         await pickNextForCashier(prefix, assignedTo);
-    }
+      }
 
-    return;
-}
+      return;
+    }
 
     if (action === "cancelled") {
       const payload = { ticket: enriched };
@@ -297,7 +291,7 @@ if (action === "completed") {
 };
 
 // =========================================================
-//   🔥 PICK NEXT PARA CAJERO — REPARADO
+//  PICK NEXT PARA CAJERO
 // =========================================================
 
 async function pickNextForCashier(prefix, idCashier) {
@@ -307,7 +301,6 @@ async function pickNextForCashier(prefix, idCashier) {
 
     const { TicketRegistration, Service } = require('../models');
 
-    // 1) buscar asignados
     const assigned = await TicketRegistration.findOne({
       where: { idTicketStatus: 2, idCashier, status: true },
       include: [{ model: Service }]
@@ -324,7 +317,6 @@ async function pickNextForCashier(prefix, idCashier) {
       return;
     }
 
-    // 2) buscar pendiente
     const next = await TicketRegistration.findOne({
       where: {
         idTicketStatus: 1,
@@ -364,7 +356,7 @@ async function pickNextForCashier(prefix, idCashier) {
 }
 
 // =========================================================
-//  🔥 REDISTRIBUCIÓN DE TICKETS — ARREGLADA
+//  REDISTRIBUCIÓN DE TICKETS
 // =========================================================
 
 async function redistributeTickets(prefix) {
@@ -380,7 +372,7 @@ async function redistributeTickets(prefix) {
 
     const { TicketRegistration } = require('../models');
 
-    const pending = await TicketRegistration.findAll({
+    await TicketRegistration.findAll({
       where: { idTicketStatus: 1, idService: serviceId, status: true },
       order: [
         [sequelize.literal('CASE WHEN transferredAt IS NULL THEN 0 ELSE 1 END'), 'ASC'],
@@ -405,8 +397,9 @@ async function redistributeTickets(prefix) {
     console.error("[socket:redistributeTickets ERROR]", e);
   }
 }
+
 // =========================================================
-//  PRINT WORKER – EXPLICADO Y CLARO
+//  PRINT WORKER
 // =========================================================
 
 let isProcessingPrintQueue = false;
@@ -438,21 +431,15 @@ async function processPrintQueueBatch(io, batchSize = 15) {
       const roomData = io.sockets.adapter.rooms.get(room);
 
       if (!roomData || roomData.size === 0) {
-        console.log(
-          `❌ [PrintWorker] NO IMPRIME porque NO hay impresora conectada (${room})`
-        );
+        console.log(`❌ [PrintWorker] NO IMPRIME porque NO hay impresora conectada (${room})`);
 
         await job.update({
           attempts: sequelize.literal('(COALESCE(attempts,0)+1)'),
           last_error: "No hay impresora conectada al bridge"
         });
 
-        continue; // 🚨 se detiene aquí → no se imprime
+        continue;
       }
-
-      // ============================================================
-      //   SÍ HAY BRIDGE → SE ENVÍA LA IMPRESIÓN
-      // ============================================================
 
       console.log(`📤 [PrintWorker] Enviando a la impresora (${room}) → job #${job.id}`);
 
@@ -469,7 +456,6 @@ async function processPrintQueueBatch(io, batchSize = 15) {
         );
       }
 
-      // Enviar al bridge
       io.to(room).emit("print-ticket", {
         jobId: job.id,
         type,
@@ -485,7 +471,7 @@ async function processPrintQueueBatch(io, batchSize = 15) {
 }
 
 // =========================================================
-//  🔥 INIT SOCKET.IO
+//  INIT SOCKET.IO
 // =========================================================
 
 function init(httpServer, opts = {}) {
@@ -500,18 +486,14 @@ function init(httpServer, opts = {}) {
 
     console.log("⚡ Cliente conectado:", socket.id);
 
-    // =====================================================
-    //  USER (APP CREACIÓN TICKETS)
-    // =====================================================
+    // USER
     socket.on("register-user", ({ idUser, username }) => {
       userActiveSocket.set(idUser, socket.id);
       socket.userInfo = { idUser, username };
       socket.join(`user-${idUser}`);
     });
 
-    // =====================================================
-    //  CAJERO (APP DASHBOARD)
-    // =====================================================
+    // CAJERO
     socket.on("register-cashier", ({ idCashier, prefix, idUser }) => {
       cashierActiveSocket.set(idCashier, socket.id);
       socket.cashierInfo = { idCashier, prefix };
@@ -530,10 +512,7 @@ function init(httpServer, opts = {}) {
         currentTicket: null
       });
 
-      // 🔥 rejoin state estable
       pickNextForCashier(prefix, idCashier);
-
-      // 🔥 redistribución inicial
       setTimeout(() => redistributeTickets(prefix), 500);
     });
     // =====================================================
@@ -596,6 +575,7 @@ function init(httpServer, opts = {}) {
       socket.emit("subscribed-tv", { ok: true });
     });
 
+    // ANNOUNCER
     socket.on("register-announcer", () => {
       socket.isAnnouncer = true;
       socket.join("announcer");
@@ -612,9 +592,7 @@ function init(httpServer, opts = {}) {
       processTtsGlobalQueue();
     });
 
-    // =====================================================
-    //   CALL TICKET → TTS
-    // =====================================================
+    // CALL TICKET
     socket.on("call-ticket", (payload) => {
       enqueueTtsCall(payload);
 
@@ -624,10 +602,7 @@ function init(httpServer, opts = {}) {
 
     socket.on("tts-done", (data) => io.emit("tts-done", data));
 
-    // =====================================================
-    //   TRANSFERENCIAS Y CAMBIOS DE TICKET
-    // =====================================================
-
+    // TRANSFER
     socket.on("ticket-transfer", async (data) => {
       const { ticket, fromCashierId, toCashierId } = data;
 
@@ -644,9 +619,7 @@ function init(httpServer, opts = {}) {
       redistributeTickets(ticket.prefix);
     });
 
-    // =====================================================
-    //  DISCONNECT
-    // =====================================================
+    // DISCONNECT
     socket.on("disconnect", () => {
       if (socket.cashierInfo) {
         const { idCashier, prefix } = socket.cashierInfo;
@@ -665,19 +638,16 @@ function init(httpServer, opts = {}) {
         if (socket.id === activeAnnouncerId) activeAnnouncerId = null;
       }
     });
-
   });
 
-  // =====================================================
-  //   TIMERS
-  // =====================================================
+  // PRINT QUEUE
   setInterval(() => processPrintQueueBatch(io, 15), 5000);
 
   return io;
 }
 
 // =========================================================
-// EXPORT
+//  EXPORTS
 // =========================================================
 
 module.exports = {
