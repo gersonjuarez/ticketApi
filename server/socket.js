@@ -606,8 +606,17 @@ function init(httpServer, opts = {}) {
     // =====================================================
     //  🔥 BRIDGE (IMPRESORAS)
     // =====================================================
-    socket.on("register-bridge", ({ location }) => {
-      const normLocation = String(location || "").trim();
+    socket.on("register-bridge", (payload) => {
+      // Soportar tanto "location" como "locationId" para compatibilidad
+      const location = payload?.location || payload?.locationId || "";
+      const normLocation = String(location).trim();
+      
+      if (!normLocation) {
+        console.error("❌ [SOCKET] register-bridge sin location/locationId");
+        socket.emit("bridge-ack", { ok: false, error: "location/locationId requerido" });
+        return;
+      }
+      
       console.log(`🟢 Bridge conectado para la tienda: ${normLocation}`);
 
       // El bridge se conecta a su "sala" personalizada
@@ -662,11 +671,16 @@ function init(httpServer, opts = {}) {
     //  TVs
     // =====================================================
     socket.on("subscribe-tv", () => {
+      console.log(`📺 [SOCKET] Cliente ${socket.id} suscribiéndose a TV`);
       socket.isTv = true;
       socket.join("tv");
       socket.emit("subscribed-tv", { ok: true });
       tvSockets.add(socket.id);
       cancelTvCleanup(socket.id);
+      
+      // Log de cuántos están en el room
+      const tvRoom = io.sockets.adapter.rooms.get("tv");
+      console.log(`📺 [SOCKET] Total de TVs conectadas: ${tvRoom ? tvRoom.size : 0}`);
     });
 
     // ANNOUNCER

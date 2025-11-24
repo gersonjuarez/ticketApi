@@ -406,8 +406,20 @@ exports.create = async (req, res, next) => {
     const socketPayload = toTicketPayload(createdTicket, client, service);
 
     if (io) {
+      console.log(`📤 [CREATE TICKET] Emitiendo new-ticket a room '${room}' y 'tv':`, {
+        id: socketPayload.idTicketRegistration,
+        correlativo: socketPayload.correlativo,
+        status: socketPayload.idTicketStatus
+      });
+      
       io.to(room).emit("new-ticket", socketPayload);
       io.to("tv").emit("new-ticket", socketPayload);
+      
+      // Log de conexiones activas en room tv
+      const tvRoom = io.sockets.adapter.rooms.get("tv");
+      console.log(`📺 [CREATE TICKET] Sockets en room 'tv': ${tvRoom ? tvRoom.size : 0}`);
+    } else {
+      console.warn("⚠️ [CREATE TICKET] io no está disponible");
     }
 
     // -------------------------
