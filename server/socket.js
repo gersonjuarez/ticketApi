@@ -537,6 +537,9 @@ async function processPrintQueueBatch(io, batchSize = 15) {
       }
 
       console.log(`📤 [PrintWorker] Enviando a la impresora (${room}) → job #${job.id}, ticket correlativo: ${correlativo}`);
+      
+      // 🔍 LOG TEMPORAL: Ver el contenido exacto del payload
+      console.log(`🔍 [PrintWorker] Payload para job #${job.id}:`, JSON.stringify(finalPayload, null, 2));
 
       await job.update({
         status: 'sent',
