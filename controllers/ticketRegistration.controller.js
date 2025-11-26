@@ -843,13 +843,11 @@ exports.update = async (req, res) => {
      } else if (newStatus === STATUS.COMPLETADO) {
   const room = updatedTicket.Service.prefix.toLowerCase();
   const completedPayload = {
-    ticket: payload,
-    completedByCashier: currentTicket.idCashier,
-    previousStatus: currentTicket.idTicketStatus,
-    timestamp: Date.now(),
+    idTicketRegistration: Number(ticketId),
   };
   io2.to(room).emit("ticket-completed", completedPayload);
   io2.to("tv").emit("ticket-completed", completedPayload);
+  console.log(`✅ [update] ticket-completed emitido para ticket ${ticketId}`);
 // 🔁 Refrescar la cola del servicio completado
 const socketModule = require("../server/socket");
 if (socketModule.redistributeTickets) {
@@ -861,13 +859,11 @@ if (socketModule.redistributeTickets) {
     } else if (newStatus === STATUS.CANCELADO) {
   const room = updatedTicket.Service.prefix.toLowerCase();
   const cancelledPayload = {
-    ticket: payload,
-    cancelledByCashier: currentTicket.idCashier,
-    previousStatus: currentTicket.idTicketStatus,
-    timestamp: Date.now(),
+    idTicketRegistration: Number(ticketId),
   };
   io2.to(room).emit("ticket-cancelled", cancelledPayload);
   io2.to("tv").emit("ticket-cancelled", cancelledPayload);
+  console.log(`✅ [update] ticket-cancelled emitido para ticket ${ticketId}`);
 
   // 🔁 Refrescar la cola del servicio cancelado
   const socketModule = require("../server/socket");
