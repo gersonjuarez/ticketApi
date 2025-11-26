@@ -28,6 +28,7 @@ const ttsRoutes = require("../routes/tts");
 const reportsRoutes = require("../routes/reports.routes.js");
 const tvMediaRoutes = require("../routes/tv_media.routes");
 const tvSettingRoutes = require("../routes/tv_setting.routes");
+const autoCancelRoutes = require("../routes/autoCancelTickets.routes");
 // Socket.IO
 const { init, getIo } = require("./socket");
 
@@ -142,6 +143,7 @@ class Servidor {
     this.app.use(this.paths.route, reportsRoutes);
     this.app.use(this.paths.route, tvMediaRoutes);
     this.app.use(this.paths.route, tvSettingRoutes);
+    this.app.use(this.paths.route, autoCancelRoutes);
 
     // ===== Middlewares de 404 y errores =====
     this.app.use(notFound);
@@ -160,6 +162,10 @@ class Servidor {
     // Inicializar Socket.IO sobre el server HTTP
     init(httpServer);
     logger.info("Socket.IO inicializado");
+
+    // Inicializar cron job de auto-cancelación
+    const { initAutoCancelCron } = require("../services/autoCancelTickets.service");
+    initAutoCancelCron();
 
     // Verificar conexión DB al arranque
     db.sequelize
