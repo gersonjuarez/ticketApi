@@ -295,19 +295,28 @@ exports.getAttentionTimes = async (req, res) => {
 };
 
 /**
- * GET /reports/ticket-times?from=YYYY-MM-DD&to=YYYY-MM-DD&cashierId?=&serviceId?&ticketId?&page?=&limit?=
+ * GET /reports/ticket-times?from=YYYY-MM-DD&to=YYYY-MM-DD&cashierId?=&serviceId?&pageSegments?=&limitSegments?=&pageByTicket?=&limitByTicket?=
  * Devuelve:
- *  - segments: una fila por attendance (qué ticket fue, cuánto duró, ventanilla y usuario) - CON PAGINACIÓN
- *  - byTicket: agregado por ticket (total, promedio, primeras/últimas marcas) - CON PAGINACIÓN
+ *  - segments: una fila por attendance (qué ticket fue, cuánto duró, ventanilla y usuario) - CON PAGINACIÓN INDEPENDIENTE
+ *  - byTicket: agregado por ticket (total, promedio, primeras/últimas marcas) - CON PAGINACIÓN INDEPENDIENTE
  */
 exports.getTicketTimes = async (req, res) => {
   try {
-    const { from, to, serviceId, cashierId, ticketId, page = 1, limit = 100 } = req.query;
+    const { 
+      from, to, serviceId, cashierId,
+      pageSegments = 1, limitSegments = 10,
+      pageByTicket = 1, limitByTicket = 10
+    } = req.query;
     
-    // Validar y convertir parámetros de paginación
-    const pageNum = Math.max(1, parseInt(page) || 1);
-    const limitNum = Math.min(1000, Math.max(10, parseInt(limit) || 100));
-    const offset = (pageNum - 1) * limitNum;
+    // Validar y convertir parámetros de paginación para SEGMENTOS
+    const pageNumSegments = Math.max(1, parseInt(pageSegments) || 1);
+    const limitNumSegments = Math.min(1000, Math.max(5, parseInt(limitSegments) || 10));
+    const offsetSegments = (pageNumSegments - 1) * limitNumSegments;
+
+    // Validar y convertir parámetros de paginación para BY TICKET
+    const pageNumByTicket = Math.max(1, parseInt(pageByTicket) || 1);
+    const limitNumByTicket = Math.min(1000, Math.max(5, parseInt(limitByTicket) || 10));
+    const offsetByTicket = (pageNumByTicket - 1) * limitNumByTicket;
 
     if (!from || !to) {
       return res.status(400).json({
@@ -326,7 +335,6 @@ exports.getTicketTimes = async (req, res) => {
 
     if (serviceId) { where.push(`ta.idService = :serviceId`); params.serviceId = Number(serviceId); }
     if (cashierId) { where.push(`ta.idCashier = :cashierId`); params.cashierId = Number(cashierId); }
-    if (ticketId)  { where.push(`ta.idTicket  = :ticketId`);  params.ticketId  = Number(ticketId); }
 
     const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -374,9 +382,9 @@ exports.getTicketTimes = async (req, res) => {
       LEFT JOIN users    du ON du.idUser    = tr.dispatchedByUser
       ${whereSql}
       ORDER BY ta.startedAt ASC, ta.idAttendance ASC
-      LIMIT :limitNum OFFSET :offset;
+      LIMIT :limitNumSegments OFFSET :offsetSegments;
       `,
-      { type: QueryTypes.SELECT, replacements: { ...params, limitNum, offset } }
+      { type: QueryTypes.SELECT, replacements: { ...params, limitNumSegments, offsetSegments } }
     );
 
     const segments = segRows.map(r => {
@@ -439,9 +447,9 @@ exports.getTicketTimes = async (req, res) => {
       ${whereSql}
       GROUP BY ta.idTicket
       ORDER BY firstStartedAt ASC, ta.idTicket ASC
-      LIMIT :limitNum OFFSET :offset;
+      LIMIT :limitNumByTicket OFFSET :offsetByTicket;
       `,
-      { type: QueryTypes.SELECT, replacements: { ...params, limitNum, offset } }
+      { type: QueryTypes.SELECT, replacements: { ...params, limitNumByTicket, offsetByTicket } }
     );
 
     const byTicket = aggRows.map(r => {
@@ -467,8 +475,8 @@ exports.getTicketTimes = async (req, res) => {
       };
     });
 
-    const totalPagesSegments = Math.ceil(totalSegments / limitNum);
-    const totalPagesTickets = Math.ceil(totalTickets / limitNum);
+    const totalPagesSegments = Math.ceil(totalSegments / limitNumSegments);
+    const totalPagesTickets = Math.ceil(totalTickets / limitNumByTicket);
 
     return res.json({
       from,
@@ -476,32 +484,27 @@ exports.getTicketTimes = async (req, res) => {
       filters: {
         serviceId: serviceId ? Number(serviceId) : undefined,
         cashierId: cashierId ? Number(cashierId) : undefined,
-        ticketId: ticketId ? Number(ticketId) : undefined,
-      },
-      pagination: {
-        page: pageNum,
-        limit: limitNum,
       },
       segments: {
         data: segments,
         pagination: {
-          page: pageNum,
-          limit: limitNum,
+          page: pageNumSegments,
+          limit: limitNumSegments,
           total: totalSegments,
           totalPages: totalPagesSegments,
-          hasNextPage: pageNum < totalPagesSegments,
-          hasPrevPage: pageNum > 1
+          hasNextPage: pageNumSegments < totalPagesSegments,
+          hasPrevPage: pageNumSegments > 1
         }
       },
       byTicket: {
         data: byTicket,
         pagination: {
-          page: pageNum,
-          limit: limitNum,
+          page: pageNumByTicket,
+          limit: limitNumByTicket,
           total: totalTickets,
           totalPages: totalPagesTickets,
-          hasNextPage: pageNum < totalPagesTickets,
-          hasPrevPage: pageNum > 1
+          hasNextPage: pageNumByTicket < totalPagesTickets,
+          hasPrevPage: pageNumByTicket > 1
         }
       },
     });
