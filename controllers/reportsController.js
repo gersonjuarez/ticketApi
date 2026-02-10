@@ -362,6 +362,8 @@ exports.getTicketTimes = async (req, res) => {
         ta.idAttendance,
         ta.idTicket,
         tr.correlativo               AS ticketLabel,
+        tr.createdAt                 AS ticketCreatedAt,
+        tr.updatedAt                 AS ticketUpdatedAt,
         ta.idCashier,
         COALESCE(c.name, CONCAT('Caja ', ta.idCashier)) AS cashier,
         ta.idService,
@@ -371,6 +373,10 @@ exports.getTicketTimes = async (req, res) => {
         u.fullName                   AS userName,
         tr.dispatchedByUser,
         du.fullName                  AS dispatchedByName,
+        tr.idClient                  AS trIdClient,
+        cl.idClient                  AS clIdClient,
+        cl.name                      AS clientName,
+        cl.dpi                       AS clientId,
         ta.startedAt,
         ta.endedAt,
         TIMESTAMPDIFF(SECOND, ta.startedAt, COALESCE(ta.endedAt, NOW())) AS durationSeconds
@@ -380,6 +386,7 @@ exports.getTicketTimes = async (req, res) => {
       LEFT JOIN services  s ON s.idService  = ta.idService
       LEFT JOIN users     u ON u.idCashier  = ta.idCashier AND u.status = 1
       LEFT JOIN users    du ON du.idUser    = tr.dispatchedByUser
+      LEFT JOIN clients  cl ON cl.idClient  = tr.idClient
       ${whereSql}
       ORDER BY ta.startedAt ASC, ta.idAttendance ASC
       LIMIT :limitNumSegments OFFSET :offsetSegments;
@@ -399,6 +406,7 @@ exports.getTicketTimes = async (req, res) => {
         idAttendance: Number(r.idAttendance),
         idTicket,
         ticketLabel,
+        ticketCreatedAt: r.ticketCreatedAt ? String(r.ticketCreatedAt) : null,
         idCashier: Number(r.idCashier),
         cashier: String(r.cashier || `Caja ${r.idCashier}`),
         idService: Number(r.idService),
@@ -408,6 +416,9 @@ exports.getTicketTimes = async (req, res) => {
         userName: r.userName ? String(r.userName) : null,
         dispatchedByUser: r.dispatchedByUser ? Number(r.dispatchedByUser) : null,
         dispatchedByName: r.dispatchedByName ? String(r.dispatchedByName) : null,
+        idClient: (r.trIdClient || r.clIdClient) ? Number(r.trIdClient || r.clIdClient) : null,
+        clientName: r.clientName ? String(r.clientName) : null,
+        clientId: r.clientId ? String(r.clientId) : null,
         startedAt: r.startedAt,
         endedAt: r.endedAt,
         durationSeconds,
@@ -440,10 +451,17 @@ exports.getTicketTimes = async (req, res) => {
         MIN(ta.startedAt) AS firstStartedAt,
         MAX(ta.endedAt)   AS lastEndedAt,
         MAX(s.prefix)     AS prefix,
-        MAX(tr.correlativo) AS ticketLabel
+        MAX(tr.correlativo) AS ticketLabel,
+        MAX(tr.createdAt) AS ticketCreatedAt,
+        MAX(du.fullName)  AS dispatchedByName,
+        MAX(tr.idClient)  AS idClient,
+        MAX(cl.name)      AS clientName,
+        MAX(cl.dpi)       AS clientId
       FROM ticketattendance ta
       LEFT JOIN services s ON s.idService = ta.idService
       LEFT JOIN ticketregistrations tr ON tr.idTicketRegistration = ta.idTicket
+      LEFT JOIN users du ON du.idUser = tr.dispatchedByUser
+      LEFT JOIN clients cl ON cl.idClient = tr.idClient
       ${whereSql}
       GROUP BY ta.idTicket
       ORDER BY firstStartedAt ASC, ta.idTicket ASC
@@ -465,6 +483,11 @@ exports.getTicketTimes = async (req, res) => {
       return {
         idTicket,
         ticketLabel,
+        ticketCreatedAt: r.ticketCreatedAt ? String(r.ticketCreatedAt) : null,
+        dispatchedByName: r.dispatchedByName ? String(r.dispatchedByName) : null,
+        idClient: r.idClient ? Number(r.idClient) : null,
+        clientName: r.clientName ? String(r.clientName) : null,
+        clientId: r.clientId ? String(r.clientId) : null,
         segments: Number(r.segments || 0),
         totalSeconds,
         totalHHMMSS: toHHMMSS(totalSeconds),
